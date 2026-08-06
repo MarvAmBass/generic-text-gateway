@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 from gtg_server.auth import (Auth, RateLimit, hash_password, hash_token,
-                             parse_tokens, verify_password)
+                             parse_tokens, parse_users, verify_password)
 from gtg_server.config import Config
 
 
@@ -36,7 +36,7 @@ class TestTokens(unittest.TestCase):
 class TestHashedAuth(unittest.TestCase):
     def test_hashed_token_grants_scope(self):
         auth = Auth(parse_tokens("send:sha256:" + hash_token("tok-hashed")))
-        self.assertEqual(auth.check("Bearer tok-hashed"), "send")
+        self.assertEqual(auth.check("Bearer tok-hashed"), ("token", "send"))
         self.assertIsNone(auth.check("Bearer wrong"))
 
     def test_password_hash_roundtrip(self):
@@ -45,18 +45,81 @@ class TestHashedAuth(unittest.TestCase):
         self.assertFalse(verify_password("hunter23", encoded))
         self.assertFalse(verify_password("hunter22", "garbage"))
 
+    def test_salted(self):
+        a = hash_password("same-password", iterations=1000)
+        b = hash_password("same-password", iterations=1000)
+        self.assertNotEqual(a, b)                        # fresh random salt each time
+        self.assertTrue(verify_password("same-password", a))
+        self.assertTrue(verify_password("same-password", b))
+
     def test_webui_pass_hash_with_cache(self):
         encoded = hash_password("uipass", iterations=1000)
         auth = Auth(parse_tokens("all:t1"), webui_user="ui",
                     webui_pass_hash=encoded)
-        self.assertEqual(auth.check(basic("ui", "uipass")), "all")
-        self.assertEqual(auth.check(basic("ui", "uipass")), "all")   # cache hit
+        self.assertEqual(auth.check(basic("ui", "uipass")), ("ui", "all"))
+        self.assertEqual(auth.check(basic("ui", "uipass")), ("ui", "all"))  # cached
         self.assertIsNone(auth.check(basic("ui", "wrong")))
         # hash takes precedence over any plaintext value
         auth2 = Auth(parse_tokens("all:t1"), webui_user="ui",
                      webui_pass="plaintext", webui_pass_hash=encoded)
         self.assertIsNone(auth2.check(basic("ui", "plaintext")))
-        self.assertEqual(auth2.check(basic("ui", "uipass")), "all")
+        self.assertEqual(auth2.check(basic("ui", "uipass")), ("ui", "all"))
+
+
+class TestPrincipals(unittest.TestCase):
+    def _users(self):
+        return parse_users({
+            "marvin": "all:" + hash_password("geheim", iterations=1000),
+            "homeassistant": "send:plain-ha-token",
+            "alerting": "receive:sha256:" + hash_token("alert-tok"),
+        })
+
+    def test_parse_kinds(self):
+        kinds = {p.name: p.kind for p in self._users()}
+        self.assertEqual(kinds, {"marvin": "pbkdf2", "homeassistant": "plain",
+                                 "alerting": "sha256"})
+
+    def test_parse_rejects(self):
+        with self.assertRaises(ValueError):
+            parse_users({"x": "superuser:tok"})
+        with self.assertRaises(ValueError):
+            parse_users({"x": "noscope"})
+        with self.assertRaises(ValueError):
+            parse_users({"x": "send:sha256:short"})
+
+    def test_basic_per_user(self):
+        auth = Auth(users=self._users())
+        self.assertEqual(auth.check(basic("marvin", "geheim")), ("marvin", "all"))
+        self.assertIsNone(auth.check(basic("marvin", "wrong")))
+        self.assertEqual(auth.check(basic("homeassistant", "plain-ha-token")),
+                         ("homeassistant", "send"))
+        self.assertEqual(auth.check(basic("alerting", "alert-tok")),
+                         ("alerting", "receive"))
+        # credentials are per-user: right secret, wrong name -> no
+        self.assertIsNone(auth.check(basic("homeassistant", "alert-tok")))
+
+    def test_bearer_matches_tokens_not_passwords(self):
+        auth = Auth(users=self._users())
+        self.assertEqual(auth.check("Bearer plain-ha-token"),
+                         ("homeassistant", "send"))
+        self.assertEqual(auth.check("Bearer alert-tok"), ("alerting", "receive"))
+        # a pbkdf2 credential is never usable as a bearer secret
+        self.assertIsNone(auth.check("Bearer geheim"))
+
+    def test_revocation(self):
+        users = [p for p in self._users() if p.name != "homeassistant"]
+        auth = Auth(users=users)
+        self.assertIsNone(auth.check("Bearer plain-ha-token"))       # revoked
+        self.assertEqual(auth.check("Bearer alert-tok"),
+                         ("alerting", "receive"))                     # others live
+
+    def test_config_collects_users(self):
+        cfg = Config(environ={
+            "GTG_USER_MARVIN": "all:x",
+            "GTG_USER_ha_send": "send:y",
+            "GTG_CONFIG": "/nonexistent",
+        })
+        self.assertEqual(cfg.users(), {"marvin": "all:x", "ha_send": "send:y"})
 
 
 class TestAuth(unittest.TestCase):
@@ -65,20 +128,22 @@ class TestAuth(unittest.TestCase):
                          webui_user="marvin-example", webui_pass="hunter22")
 
     def test_bearer(self):
-        self.assertEqual(self.auth.check("Bearer sec-send"), "send")
+        self.assertEqual(self.auth.check("Bearer sec-send"), ("token", "send"))
         self.assertIsNone(self.auth.check("Bearer nope"))
         self.assertIsNone(self.auth.check(None))
         self.assertIsNone(self.auth.check(""))
 
     def test_basic_webui(self):
-        self.assertEqual(self.auth.check(basic("marvin-example", "hunter22")), "all")
+        self.assertEqual(self.auth.check(basic("marvin-example", "hunter22")),
+                         ("marvin-example", "all"))
         self.assertIsNone(self.auth.check(basic("marvin-example", "wrong")))
         # with a webui user configured, tokens-as-password are NOT accepted
         self.assertIsNone(self.auth.check(basic("x", "sec-all")))
 
     def test_basic_token_as_password_without_webui_user(self):
         auth = Auth(parse_tokens("receive:sec-recv"))
-        self.assertEqual(auth.check(basic("anyone", "sec-recv")), "receive")
+        self.assertEqual(auth.check(basic("anyone", "sec-recv")),
+                         ("token", "receive"))
         self.assertIsNone(auth.check(basic("anyone", "bad")))
 
     def test_scopes(self):

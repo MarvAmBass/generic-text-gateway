@@ -27,6 +27,43 @@ SCOPES = ("send", "receive", "all")
 PBKDF2_ITERATIONS = 210_000
 
 
+class Principal:
+    """A named user or system identity with one credential and one scope."""
+
+    __slots__ = ("name", "scope", "kind", "secret")
+
+    def __init__(self, name, scope, kind, secret):
+        self.name = name
+        self.scope = scope
+        self.kind = kind          # "pbkdf2" | "sha256" | "plain"
+        self.secret = secret
+
+
+def parse_users(pairs):
+    """{name: "scope:credential"} -> [Principal].
+
+    Credential forms: 'pbkdf2_sha256$...' (Basic-auth password hash),
+    'sha256:<64-hex>' (hashed token), anything else = plaintext token.
+    """
+    principals = []
+    for name, value in sorted(pairs.items()):
+        scope, sep, cred = value.strip().partition(":")
+        if not sep or scope not in SCOPES or not cred:
+            raise ValueError(
+                f"invalid GTG_USER_{name} (want scope:credential): {value!r}")
+        if cred.startswith("pbkdf2_sha256$"):
+            kind = "pbkdf2"
+        elif cred.startswith("sha256:"):
+            cred = cred[len("sha256:"):].lower()
+            if len(cred) != 64 or any(c not in "0123456789abcdef" for c in cred):
+                raise ValueError(f"invalid sha256 hash for user {name}")
+            kind = "sha256"
+        else:
+            kind = "plain"
+        principals.append(Principal(name, scope, kind, cred))
+    return principals
+
+
 def parse_tokens(spec):
     """'all:tok1,send:sha256:<hex>' -> ({token: scope}, {sha256hex: scope})."""
     plain, hashed = {}, {}
@@ -71,43 +108,80 @@ def _eq(a, b):
 
 
 class Auth:
-    def __init__(self, tokens, webui_user="", webui_pass="", webui_pass_hash=""):
+    def __init__(self, tokens=None, webui_user="", webui_pass="",
+                 webui_pass_hash="", users=None):
+        tokens = tokens if tokens is not None else ({}, {})
         if isinstance(tokens, dict):          # backwards-compatible: plain dict
             tokens = (tokens, {})
         self.tokens, self.hashed_tokens = tokens
+        self.users = list(users or [])        # [Principal]
         self.webui_user = webui_user
         self.webui_pass = webui_pass
         self.webui_pass_hash = webui_pass_hash
-        self._kdf_cache = set()               # sha256 of verified user|pass pairs
+        self._kdf_cache = set()               # sha256 of verified name|pass pairs
         self._kdf_lock = threading.Lock()
 
     def _check_token(self, token):
+        """Bearer-style secret -> (name, scope) or None. Never matches pbkdf2
+        credentials (passwords are Basic-only; no username to attribute)."""
         for known, scope in self.tokens.items():
             if _eq(known, token):
-                return scope
+                return "token", scope
         digest = hash_token(token)
         for known, scope in self.hashed_tokens.items():
             if _eq(known, digest):
-                return scope
+                return "token", scope
+        for p in self.users:
+            if p.kind == "plain" and _eq(p.secret, token):
+                return p.name, p.scope
+            if p.kind == "sha256" and _eq(p.secret, digest):
+                return p.name, p.scope
+        return None
+
+    def _kdf_verify(self, name, password, encoded):
+        key = hashlib.sha256(f"{name}\x00{password}".encode()).hexdigest()
+        with self._kdf_lock:
+            if key in self._kdf_cache:
+                return True
+        if verify_password(password, encoded):
+            with self._kdf_lock:
+                self._kdf_cache.add(key)
+                if len(self._kdf_cache) > 32:
+                    self._kdf_cache.clear()
+            return True
+        return False
+
+    def _check_basic(self, user, password):
+        """-> (name, scope) or None."""
+        known_name = False
+        for p in self.users:
+            if not _eq(p.name, user):
+                continue
+            known_name = True
+            if p.kind == "pbkdf2" and self._kdf_verify(p.name, password, p.secret):
+                return p.name, p.scope
+            if p.kind == "sha256" and _eq(p.secret, hash_token(password)):
+                return p.name, p.scope
+            if p.kind == "plain" and _eq(p.secret, password):
+                return p.name, p.scope
+        if known_name:
+            # a known username binds strictly to its own credential — no fallback
+            return None
+        if self.webui_user and _eq(user, self.webui_user) and \
+                self._check_webui_password(password):
+            return self.webui_user, "all"
+        if not self.webui_user:
+            # unknown username + a valid token as the password (browser token login)
+            return self._check_token(password)
         return None
 
     def _check_webui_password(self, password):
         if self.webui_pass_hash:
-            key = hashlib.sha256(f"{self.webui_user}\x00{password}".encode()).hexdigest()
-            with self._kdf_lock:
-                if key in self._kdf_cache:
-                    return True
-            if verify_password(password, self.webui_pass_hash):
-                with self._kdf_lock:
-                    self._kdf_cache.add(key)
-                    if len(self._kdf_cache) > 32:
-                        self._kdf_cache.clear()
-                return True
-            return False
+            return self._kdf_verify(self.webui_user, password, self.webui_pass_hash)
         return bool(self.webui_pass) and _eq(password, self.webui_pass)
 
     def check(self, header):
-        """Authorization header value -> scope string, or None if unauthorized."""
+        """Authorization header value -> (name, scope), or None if unauthorized."""
         if not header:
             return None
         kind, _, value = header.partition(" ")
@@ -119,12 +193,7 @@ class Auth:
                 user, _, password = base64.b64decode(value).decode("utf-8").partition(":")
             except Exception:
                 return None
-            if self.webui_user:
-                if _eq(user, self.webui_user) and self._check_webui_password(password):
-                    return "all"
-                return None
-            # No web UI credentials configured: accept any user + API token as password.
-            return self._check_token(password)
+            return self._check_basic(user, password)
         return None
 
     @staticmethod

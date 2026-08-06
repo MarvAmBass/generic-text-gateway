@@ -24,13 +24,18 @@ def cmd_run(cfg):
     log = _logger(cfg)
     log.info("generic-text-gateway %s", __version__)
 
+    users = auth_mod.parse_users(cfg.users())
     tokens_spec = cfg.str("TOKENS")
-    if not tokens_spec:
-        log.error("GTG_TOKENS is required (e.g. GTG_TOKENS=all:$(openssl rand -hex 24))")
+    if not tokens_spec and not users:
+        log.error("no credentials configured — set GTG_USER_<name>='scope:credential' "
+                  "entries (recommended) and/or GTG_TOKENS")
         return 2
-    tokens = auth_mod.parse_tokens(tokens_spec)
+    tokens = auth_mod.parse_tokens(tokens_spec) if tokens_spec else ({}, {})
     auth = auth_mod.Auth(tokens, cfg.str("WEBUI_USER"), cfg.str("WEBUI_PASS"),
-                         cfg.str("WEBUI_PASS_HASH"))
+                         cfg.str("WEBUI_PASS_HASH"), users=users)
+    if users:
+        log.info("principals: %s", ", ".join(f"{p.name}({p.scope},{p.kind})"
+                                             for p in users))
 
     store = FileStore(cfg.str("STORE_DIR")) if cfg.str("STORE_DIR") else None
     if store:
@@ -157,17 +162,26 @@ def cmd_send(cfg, to, text):
 
 
 def cmd_hash_password():
-    """Interactive: print a GTG_WEBUI_PASS_HASH value (nothing echoed/stored)."""
+    """Interactive: print a ready-to-paste GTG_USER_<name> line (nothing stored)."""
     import getpass
+    import re
 
     from . import auth as auth_mod
+    name = input("Username (e.g. marvin): ").strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name or ""):
+        print("username must be [a-z0-9_-]", file=sys.stderr)
+        return 1
+    scope = input("Scope [all/send/receive] (default all): ").strip() or "all"
+    if scope not in auth_mod.SCOPES:
+        print(f"scope must be one of {auth_mod.SCOPES}", file=sys.stderr)
+        return 1
     pw = getpass.getpass("Password: ")
     if pw != getpass.getpass("Repeat:   "):
         print("passwords do not match", file=sys.stderr)
         return 1
     # Single quotes included: the hash contains '$', which double quotes or no
     # quotes would let the shell expand away when the config is sourced.
-    print("export GTG_WEBUI_PASS_HASH='" + auth_mod.hash_password(pw) + "'")
+    print(f"export GTG_USER_{name}='{scope}:{auth_mod.hash_password(pw)}'")
     return 0
 
 
@@ -190,7 +204,8 @@ def main(argv=None):
     sub.add_parser("run", help="run the gateway (default)")
     sub.add_parser("fingerprint", help="print the TLS cert SHA-256 fingerprint")
     sub.add_parser("probe", help="probe modems and print a JSON report")
-    sub.add_parser("hash-password", help="hash a web UI password for GTG_WEBUI_PASS_HASH")
+    sub.add_parser("hash-password",
+                   help="create a GTG_USER_<name> line with a hashed password")
     sub.add_parser("hash-token", help="stdin token -> scope:sha256:<hex> form for GTG_TOKENS")
     send_p = sub.add_parser("send", help="one-shot test send via the modem")
     send_p.add_argument("--to", required=True)

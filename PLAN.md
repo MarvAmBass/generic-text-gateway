@@ -335,9 +335,15 @@ solid delivery semantics without any server-side persistence.
 
 ### 3.10 Authentication
 
-- Bearer tokens, compared with `hmac.compare_digest`.
-- `GTG_TOKENS` = comma list of `scope:token` entries; scopes: `send`, `receive`, `all`.
-  Example: `GTG_TOKENS=all:s3cr3t-ops,send:ha-send-only,receive:client-inbox`.
+- **Named principals** (recommended): one `GTG_USER_<name>='<scope>:<credential>'` line
+  per human or system — e.g. `marvin` (PBKDF2 password hash, Basic auth),
+  `homeassistant` (plaintext or sha256 token, Bearer) — each individually revocable by
+  deleting its line. Credential kinds: `pbkdf2_sha256$…` (Basic-only),
+  `sha256:<hex>`, plaintext token. Known usernames bind strictly to their own
+  credential; API logs attribute actions to the principal name.
+- Legacy/simple: `GTG_TOKENS` = comma list of `scope:token` entries; scopes: `send`,
+  `receive`, `all`. Example: `GTG_TOKENS=all:s3cr3t-ops,send:ha-send-only`.
+- All comparisons via `hmac.compare_digest`.
 - **Hashed at-rest storage** (recommended): token entries as `scope:sha256:<64-hex>`
   (`gtg-server hash-token`; unsalted sha256 is fine — tokens are high-entropy random),
   web UI password as `GTG_WEBUI_PASS_HASH` = `pbkdf2_sha256$iter$salt$dk`
@@ -364,7 +370,8 @@ the env names minus the prefix (`sim_pin = 1234` ≙ `GTG_SIM_PIN=1234`).
 | `GTG_TLS` | `auto` | `auto` \| `provided` \| `off` |
 | `GTG_TLS_CERT` / `GTG_TLS_KEY` | *(unset)* | external cert/key (implies `provided`) |
 | `GTG_TLS_SANS` | auto-detected | comma list for generated cert |
-| `GTG_TOKENS` | *(required)* | `scope:token,...` — server refuses to start without |
+| `GTG_USER_<name>` | — | `scope:credential` per principal (3.10); at least one credential source required |
+| `GTG_TOKENS` | *(unset)* | legacy anonymous `scope:token,...` entries |
 | `GTG_ALLOWED_RECIPIENTS` | *(unset = all)* | recipient allowlist/prefixes |
 | `GTG_DATA_DIR` | `/var/lib/generic-text-gateway` | generated TLS material only |
 | `GTG_STORE_DIR` | *(unset = no persistence)* | opt-in file store for message history (3.7) |

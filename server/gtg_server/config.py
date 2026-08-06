@@ -55,6 +55,25 @@ class Config:
                 vals[key] = ev
         self._v = vals
 
+        # Named principals: GTG_USER_<name> env vars / user_<name> INI keys.
+        users = {}
+        if path and os.path.isfile(path):
+            cp = configparser.ConfigParser()
+            cp.read(path)
+            if cp.has_section(self.SECTION):
+                for key, value in cp.items(self.SECTION):
+                    if key.lower().startswith("user_"):
+                        users[key[len("user_"):].lower()] = value
+        user_prefix = self.PREFIX + "USER_"
+        for key, value in env.items():
+            if key.startswith(user_prefix) and len(key) > len(user_prefix):
+                users[key[len(user_prefix):].lower()] = value
+        self._users = users
+
+    def users(self):
+        """{name: 'scope:credential'} from GTG_USER_* / user_* entries."""
+        return dict(self._users)
+
     def str(self, key):
         return self._v[key].strip()
 

@@ -101,6 +101,26 @@ Everything is settable via environment variables (`GTG_*` / `GTC_*`), with an op
 INI config file (`GTG_CONFIG=/etc/generic-text-gateway/gateway.conf`); env wins.
 The full reference tables are in [PLAN.md](PLAN.md) §3.11 (server) and §4.4 (client).
 
+### Users & tokens
+
+Give every human and every system its **own identity**, each revocable by deleting one
+line (`gtg-server` restart applies it):
+
+```sh
+# a human: Basic auth (web UI / curl -u), password stored as salted PBKDF2 hash —
+# reuse a personal password without it ever existing on the server
+export GTG_USER_marvin='all:pbkdf2_sha256$210000$<salt>$<dk>'
+
+# systems: Bearer tokens, one per integration -> revoke one without touching others
+export GTG_USER_homeassistant='send:<token>'          # plaintext is fine for random tokens
+export GTG_USER_alerting='send:sha256:<hex>'          # or hashed at rest
+export GTG_USER_ha_inbox='receive:<token>'
+```
+
+Scopes: `send`, `receive`, `all` (`all` is required for the runtime SIM-PIN endpoint —
+give it to humans, not integrations). A known username only ever matches its own
+credential; API logs attribute sends/PIN entries to the principal name.
+
 ### Hashed credentials (recommended)
 
 Server-side secrets don't have to be stored in plaintext — keep only hashes in the

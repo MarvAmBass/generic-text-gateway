@@ -1,6 +1,6 @@
 # Maintainer: MarvAmBass <MarvAmBass@users.noreply.github.com>
 pkgname=generic-text-gateway
-pkgver=0.1.1
+pkgver=0.2.0
 pkgrel=0
 pkgdesc="USB modem SMS gateway server (HTTPS API + web UI)"
 url="https://github.com/MarvAmBass/generic-text-gateway"

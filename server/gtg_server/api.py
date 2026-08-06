@@ -130,24 +130,25 @@ class Handler(BaseHTTPRequestHandler):
             return None
 
     def _authorize(self, need):
-        """-> scope or None (response already sent)."""
+        """-> (name, scope) or None (response already sent)."""
         ip = self._client_ip()
         blocked = self.state.backoff.blocked_for(ip)
         if blocked > 0:
             self._error(429, "too_many_attempts", "try again later",
                         {"Retry-After": str(int(blocked) + 1)})
             return None
-        scope = self.state.auth.check(self.headers.get("Authorization"))
-        if scope is None:
+        ident = self.state.auth.check(self.headers.get("Authorization"))
+        if ident is None:
             self.state.backoff.fail(ip)
             self._error(401, "unauthorized", "authentication required",
                         {"WWW-Authenticate": 'Basic realm="generic-text-gateway"'})
             return None
         self.state.backoff.ok(ip)
-        if not self.state.auth.allows(scope, need):
-            self._error(403, "forbidden", f"token lacks '{need}' scope")
+        if not self.state.auth.allows(ident[1], need):
+            self._error(403, "forbidden",
+                        f"'{ident[0]}' lacks the '{need}' scope")
             return None
-        return scope
+        return ident
 
     # -- routing -------------------------------------------------------------
 
@@ -183,22 +184,24 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0].rstrip("/")
         if path == "/v1/messages":
-            if self._authorize("send") is not None:
-                return self._send_message()
+            ident = self._authorize("send")
+            if ident is not None:
+                return self._send_message(ident)
             return None
         if path == "/v1/sim/pin":
-            if self._authorize("all") is not None:
-                return self._sim_pin()
+            ident = self._authorize("all")
+            if ident is not None:
+                return self._sim_pin(ident)
             return None
         self._error(404, "not_found", "unknown endpoint")
 
     def _any_scope(self):
         """Any valid credential is enough (health/modem/UI)."""
-        scope = self.state.auth.check(self.headers.get("Authorization"))
-        if scope is None:
+        ident = self.state.auth.check(self.headers.get("Authorization"))
+        if ident is None:
             return self._authorize("receive")           # emits 401 + backoff
         self.state.backoff.ok(self._client_ip())
-        return scope
+        return ident
 
     # -- endpoints -----------------------------------------------------------
 
@@ -240,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(404, "not_found", "no such message")
         self._json(200, self.state.outbox.public(rec))
 
-    def _send_message(self):
+    def _send_message(self, ident):
         data = self._read_json()
         if data is None:
             return
@@ -271,10 +274,13 @@ class Handler(BaseHTTPRequestHandler):
         idem = data.get("idempotency_key") or None
         rec, created = self.state.outbox.create(to, text, idem)
         if created:
+            self.state.log.info("outbound #%s queued by '%s' (%d recipient(s))",
+                                rec["id"], ident[0], len(to))
             self.state.worker.submit_send(rec["id"])
         self._json(202 if created else 200, self.state.outbox.public(rec))
 
-    def _sim_pin(self):
+    def _sim_pin(self, ident):
+        self.state.log.warning("runtime SIM PIN submission by '%s'", ident[0])
         worker = self.state.worker
         cap = self.state.cfg.int("SIM_PIN_MAX_TRIES") + 2
         if self.state.cfg.str("SIM_PIN"):
