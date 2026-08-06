@@ -432,10 +432,13 @@ one process + a small local HTTP server:
      server cannot re-broadcast them either). With a store-enabled server (durable stream
      id, 3.7) this case only occurs when the operator wipes/replaces the store — server
      restarts alone keep the cursor valid and are bridged losslessly from history.
-  4. *Mark-then-fire journal*: the message id is appended to a processed-journal (bounded,
-     in the state dir) **before** the HA event POST; replayed ids found in the journal are
-     skipped. A crash between journal-write and HA-POST drops that one message instead of
-     doubling it — the correct bias for toggle-style automations.
+  4. *Mark-then-fire journal*: a **stable content hash** (sender + SMSC timestamp + body,
+     computed server-side) is appended to a processed-journal (bounded, in the state dir)
+     **before** the HA event POST; replayed messages whose hash is journaled are skipped.
+     Hashes rather than ids: ids reset when a store-less server restarts, the hash of a
+     given SMS never does — so even a message re-read from the SIM after a crashed server
+     restart cannot re-fire. A crash between journal-write and HA-POST drops that one
+     message instead of doubling it — the correct bias for toggle-style automations.
   5. *HA-POST failure policy* (same bias): retry with backoff **only** on errors where the
      request provably never arrived (connect refused, DNS, TLS setup); on ambiguous
      failures (timeout after the request was sent, 5xx) drop and log — never blind-retry
