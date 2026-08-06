@@ -4,7 +4,7 @@
 name: generic-text-gateway
 arch: all
 platform: linux
-version: "0.4.0"
+version: "0.4.1"
 maintainer: MarvAmBass <MarvAmBass@users.noreply.github.com>
 description: USB modem SMS gateway server (HTTPS API + web UI)
 homepage: https://github.com/MarvAmBass/generic-text-gateway

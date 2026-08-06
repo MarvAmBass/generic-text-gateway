@@ -155,6 +155,12 @@ class ModemWorker(threading.Thread):
                 state = sim.cpin_state(self.port)
         self._set_health(sim=state)
         if state == "ready":
+            # The configured PIN is proven good, so allow it to be used again
+            # after the next re-enumeration (unplug/replug, modem reset, reboot
+            # of the stick). The cap only exists to stop a WRONG configured PIN
+            # from burning all three attempts — a wrong PIN never reaches this
+            # branch, so it still gets exactly SIM_PIN_MAX_TRIES per process.
+            self._env_pin_tries = 0
             return True
         if state == "pin_required":
             self._set_health(state="sim_pin_required")
