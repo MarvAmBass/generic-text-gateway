@@ -5,7 +5,7 @@ pkgrel=0
 pkgdesc="USB modem SMS gateway server (HTTPS API + web UI)"
 url="https://github.com/MarvAmBass/generic-text-gateway"
 arch="noarch"
-license="custom"
+license="MIT"
 # usb-modeswitch is optional: known ZeroCD sticks (e.g. Huawei E1750) are
 # switched by the built-in usbdevfs implementation; install usb-modeswitch only
 # as a fallback for untested device variants.

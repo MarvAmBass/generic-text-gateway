@@ -8,7 +8,7 @@ version: "0.3.1"
 maintainer: MarvAmBass <MarvAmBass@users.noreply.github.com>
 description: USB modem SMS gateway server (HTTPS API + web UI)
 homepage: https://github.com/MarvAmBass/generic-text-gateway
-license: custom
+license: MIT
 depends:
   - python3
   - python3-serial

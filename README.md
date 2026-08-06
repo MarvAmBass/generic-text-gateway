@@ -179,3 +179,7 @@ PYTHONPATH=client python3 -m unittest discover -s client/tests
 ```
 
 All example phone numbers in this repo are fake.
+
+## License
+
+[MIT](LICENSE)
