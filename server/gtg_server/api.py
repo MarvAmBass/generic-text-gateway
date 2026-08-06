@@ -6,17 +6,19 @@ No cookies, no sessions. Mutating endpoints require Content-Type: application/js
 import json
 import os
 import queue
+import re
 import socket
 import threading
-import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import __version__
 from .config import is_loopback
+from .modem import sms_codec
 
 MAX_BODY = 64 * 1024
 MAX_TEXT_LEN = 5000
 SSE_HEARTBEAT = 15.0
+E164_RE = re.compile(r"\+?[0-9]{3,20}")
 
 
 class GatewayHTTPServer(ThreadingHTTPServer):
@@ -25,9 +27,28 @@ class GatewayHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, family, sockaddr, handler, ctx):
         self.address_family = family
+        self.tls_ctx = ctx
         super().__init__(sockaddr[:2], handler)
-        if ctx is not None:
-            self.socket = ctx.wrap_socket(self.socket, server_side=True)
+
+    def get_request(self):
+        """Accept, then hand the raw socket to the worker thread.
+
+        The TLS handshake must NOT happen here: wrapping the *listening* socket
+        makes accept() perform the handshake in the single serve_forever loop,
+        so one client that connects and sends nothing blocks every other request
+        indefinitely. Handshaking in the per-connection thread puts it under the
+        handler's socket timeout instead.
+        """
+        sock, addr = self.socket.accept()
+        sock.settimeout(Handler.timeout)
+        if self.tls_ctx is not None:
+            # do_handshake_on_connect=False: the handshake is deferred to the
+            # first read, which happens in the per-connection thread under the
+            # timeout set above — get_request() itself still runs in the accept
+            # loop, so it must not block here.
+            sock = self.tls_ctx.wrap_socket(sock, server_side=True,
+                                            do_handshake_on_connect=False)
+        return sock, addr
 
     def server_bind(self):
         if self.address_family == socket.AF_INET6:
@@ -90,6 +111,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         self.state.log.info("%s %s", self.client_address[0], fmt % args)
 
+    def log_error(self, fmt, *args):
+        # BaseHTTPRequestHandler's malformed-request errors echo the raw request
+        # line/body — which for POST /v1/sim/pin would put the SIM PIN in the
+        # log. Log the fact, never the content.
+        self.state.log.warning("%s malformed request rejected",
+                               self.client_address[0])
+
     def _client_ip(self):
         return self.client_address[0]
 
@@ -105,6 +133,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _error(self, code, err_code, message, extra_headers=None):
+        # Don't try to reuse a connection whose request body we may not have
+        # drained — it would desync any proxy placed in front of the gateway.
+        self.close_connection = True
         self._json(code, {"error": {"code": err_code, "message": message}},
                    extra_headers)
 
@@ -122,10 +153,14 @@ class Handler(BaseHTTPRequestHandler):
             self._error(400, "bad_request", "missing or oversized body")
             return None
         try:
-            return json.loads(self.rfile.read(length))
+            data = json.loads(self.rfile.read(length))
         except (ValueError, UnicodeDecodeError):
             self._error(400, "bad_json", "body is not valid JSON")
             return None
+        if not isinstance(data, dict):
+            self._error(400, "bad_json", "body must be a JSON object")
+            return None
+        return data
 
     def _authorize(self, need):
         """-> (name, scope) or None (response already sent)."""
@@ -157,11 +192,13 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/ui") and self.state.webui_html is not None:
             return self._serve_webui()
         if path == "/v1/health":
-            if self._any_scope():
-                return self._health()
+            ident = self._any_scope()
+            if ident:
+                return self._health(ident)
             return None
         if path == "/v1/modem":
-            if self._any_scope():
+            # IMEI/serial are durable subscriber identifiers — 'all' only.
+            if self._authorize("all") is not None:
                 return self._json(200, {"modem": self.state.worker.modem_info,
                                         "port": self.state.worker.port_info})
             return None
@@ -174,8 +211,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._history()
             return None
         if path.startswith("/v1/messages/"):
-            if self._authorize("send") is not None:
-                return self._get_message(path)
+            ident = self._authorize("send")
+            if ident is not None:
+                return self._get_message(path, ident)
             return None
         self._error(404, "not_found", "unknown endpoint")
 
@@ -194,7 +232,14 @@ class Handler(BaseHTTPRequestHandler):
         self._error(404, "not_found", "unknown endpoint")
 
     def _any_scope(self):
-        """Any valid credential is enough (health/modem/UI)."""
+        """Any valid credential is enough (health/modem/UI).
+
+        The backoff must be consulted BEFORE the credential is evaluated —
+        otherwise these routes both skip brute-force throttling and let an
+        unauthenticated client burn a PBKDF2 verification per request.
+        """
+        if self.state.backoff.blocked_for(self._client_ip()) > 0:
+            return self._authorize("receive")           # emits 429, no KDF run
         ident = self.state.auth.check(self.headers.get("Authorization"))
         if ident is None:
             return self._authorize("receive")           # emits 401 + backoff
@@ -220,7 +265,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _health(self):
+    def _health(self, ident):
         health = self.state.worker.health()
         health["hub"] = self.state.hub.stats()
         health["store_enabled"] = self.state.store is not None
@@ -229,15 +274,22 @@ class Handler(BaseHTTPRequestHandler):
         health["status"] = ("ok" if state == "ready" else
                             "degraded" if state in ("registering", "starting",
                                                     "sim_pin_required") else "down")
+        if ident[1] != "all":
+            # Low-scope principals get operational state only: no IMEI/serial
+            # (durable subscriber identifiers) and no raw error text (host paths).
+            for key in ("modem", "port", "last_error"):
+                health.pop(key, None)
         self._json(200, health)
 
-    def _get_message(self, path):
+    def _get_message(self, path, ident):
         try:
             rec_id = int(path.rsplit("/", 1)[1])
         except ValueError:
             return self._error(400, "bad_request", "message id must be an integer")
         rec = self.state.outbox.get(rec_id)
-        if rec is None:
+        # Principals only see their own outbound records (404, not 403, so the
+        # id space isn't enumerable); 'all' scope sees everything.
+        if rec is None or (ident[1] != "all" and rec.get("owner") != ident[0]):
             return self._error(404, "not_found", "no such message")
         self._json(200, self.state.outbox.public(rec))
 
@@ -257,11 +309,27 @@ class Handler(BaseHTTPRequestHandler):
         if len(text) > MAX_TEXT_LEN:
             return self._error(400, "bad_request", f"text longer than {MAX_TEXT_LEN}")
         to = [n.strip() for n in to]
+        # Strict E.164-ish validation, mode-independent: the text-mode AT path
+        # interpolates the number into a command line, so anything but digits
+        # would be AT command injection (CR/LF, quotes, Ctrl-Z).
+        if not all(E164_RE.fullmatch(n) for n in to):
+            return self._error(400, "bad_request",
+                               "recipients must be +?<3-20 digits>")
         for number in to:
             if not self.state.recipient_allowed(number):
                 return self._error(403, "recipient_not_allowed",
                                    f"recipient not in allowlist: {number}")
-        if not self.state.rate.allow(len(to)):
+        idem = data.get("idempotency_key") or None
+        if idem is not None and not isinstance(idem, str):
+            return self._error(400, "bad_request",
+                               "idempotency_key must be a string")
+        # Charge the rate limit per SMS segment, not per recipient: one 5000-char
+        # non-GSM7 message is ~75 billable segments.
+        try:
+            segments = sum(len(sms_codec.build_submit_pdus(n, text)) for n in to)
+        except ValueError:
+            return self._error(400, "bad_request", "message cannot be encoded")
+        if not self.state.rate.allow(segments):
             return self._error(429, "rate_limited", "send rate limit exceeded",
                                {"Retry-After": "60"})
         health = self.state.worker.health()
@@ -269,8 +337,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(503, "modem_unavailable",
                                f"modem state: {health['state']}",
                                {"Retry-After": "30"})
-        idem = data.get("idempotency_key") or None
-        rec, created = self.state.outbox.create(to, text, idem)
+        rec, created = self.state.outbox.create(to, text, idem, owner=ident[0])
         if created:
             self.state.log.info("outbound #%s queued by '%s' (%d recipient(s))",
                                 rec["id"], ident[0], len(to))

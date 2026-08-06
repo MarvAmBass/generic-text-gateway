@@ -54,14 +54,19 @@ def ensure_cert(data_dir, sans, logger):
         return cert, key
     os.makedirs(data_dir, exist_ok=True)
     logger.info("generating self-signed TLS certificate in %s", data_dir)
-    subprocess.run(
-        ["openssl", "req", "-x509", "-newkey", "ec",
-         "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
-         "-keyout", key, "-out", cert, "-days", "3650",
-         "-subj", "/CN=generic-text-gateway",
-         "-addext", f"subjectAltName={_san_string(sans)}"],
-        check=True, capture_output=True)
+    old_umask = os.umask(0o077)          # key must never exist world-readable
+    try:
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "ec",
+             "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+             "-keyout", key, "-out", cert, "-days", "3650",
+             "-subj", "/CN=generic-text-gateway",
+             "-addext", f"subjectAltName={_san_string(sans)}"],
+            check=True, capture_output=True)
+    finally:
+        os.umask(old_umask)
     os.chmod(key, 0o600)
+    os.chmod(cert, 0o644)
     return cert, key
 
 

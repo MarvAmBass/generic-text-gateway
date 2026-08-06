@@ -38,7 +38,8 @@ class Config:
         users = {}                    # named principals: user_<name> / GTG_USER_<name>
         path = env.get(self.PREFIX + "CONFIG", vals["CONFIG"])
         if path and os.path.isfile(path):
-            cp = configparser.ConfigParser()
+            # interpolation=None: credentials may legitimately contain '%'
+            cp = configparser.ConfigParser(interpolation=None)
             cp.read(path)
             if cp.has_section(self.SECTION):
                 for key, value in cp.items(self.SECTION):

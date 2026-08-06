@@ -18,7 +18,7 @@ class Outbox:
         self.store = store
         self.keep = keep
 
-    def create(self, to, text, idempotency_key=None):
+    def create(self, to, text, idempotency_key=None, owner=None):
         """-> (record, created_bool). Replays return the original record."""
         with self._lock:
             if idempotency_key and idempotency_key in self._idem:
@@ -32,6 +32,7 @@ class Outbox:
                 "error": None,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "idempotency_key": idempotency_key,
+                "owner": owner,                        # principal that queued it
             }
             self._next_id += 1
             self._records[rec["id"]] = rec

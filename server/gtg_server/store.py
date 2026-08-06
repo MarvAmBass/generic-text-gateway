@@ -30,7 +30,7 @@ class FileStore:
 
     def _load_stream(self):
         try:
-            with open(self._stream_path) as f:
+            with open(self._stream_path, encoding="utf-8") as f:
                 data = json.load(f)
             self._stream_id = data["stream_id"]
             self._next_id = int(data["next_id"])
@@ -41,7 +41,7 @@ class FileStore:
 
     def _persist_stream(self, next_id):
         tmp = self._stream_path + ".tmp"
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"stream_id": self._stream_id, "next_id": next_id}, f)
             f.flush()
             os.fsync(f.fileno())
@@ -74,7 +74,7 @@ class FileStore:
     def _write(self, directory, name, payload):
         path = os.path.join(directory, name)
         tmp = path + ".tmp"
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
@@ -102,14 +102,21 @@ class FileStore:
 
     # -- reading -------------------------------------------------------------
 
+    MAX_REPLAY = 500
+
     def replay_after(self, after_id, before_id):
-        """Inbound messages with after_id < id < before_id, ascending."""
+        """Inbound messages with after_id < id < before_id, ascending.
+
+        Bounded: a client asking to replay from 0 must not pull the entire
+        history into RAM (the caller holds the hub lock, stalling inbound).
+        """
         out = []
         with self._lock:
-            entries = [e for e in self._index if after_id < e[0] < before_id]
+            entries = [e for e in self._index
+                       if after_id < e[0] < before_id][-self.MAX_REPLAY:]
         for _, path in entries:
             try:
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     out.append(json.load(f))
             except (OSError, ValueError):
                 continue
@@ -126,7 +133,7 @@ class FileStore:
         out = []
         for _, path in reversed(entries):
             try:
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     out.append(json.load(f))
             except (OSError, ValueError):
                 continue

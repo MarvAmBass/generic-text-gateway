@@ -94,7 +94,11 @@ const $ = (id) => document.getElementById(id);
 let histOldest = null;
 
 function chip(el, text, cls) {
-  el.innerHTML = "<b>" + el.querySelector("b").textContent + "</b> " + text;
+  // textContent, not innerHTML: `text` can carry the network operator name,
+  // which comes from the modem's AT+COPS? reply — i.e. from the cell network.
+  const label = el.querySelector("b");
+  while (label.nextSibling) label.nextSibling.remove();
+  label.after(document.createTextNode(" " + text));
   el.className = "chip" + (cls ? " " + cls : "");
 }
 

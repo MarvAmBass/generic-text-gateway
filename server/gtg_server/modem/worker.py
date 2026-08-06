@@ -5,13 +5,17 @@ receive setup, then serves jobs (send SMS, runtime PIN, SIM deletes) and URCs,
 with periodic polling/reconciliation. On any serial failure it re-enters the
 connect cycle with backoff.
 """
+import collections
 import queue
+import re
 import threading
 import time
 from datetime import datetime, timezone
 
 from . import discovery, modeswitch, receive, sim, sms_codec
 from .at import ATError, ATPort, ATTimeout
+
+_E164_RE = re.compile(r"\+?[0-9]{3,20}")
 
 
 class ModemWorker(threading.Thread):
@@ -26,7 +30,9 @@ class ModemWorker(threading.Thread):
 
         self.port = None
         self.assembler = receive.Assembler()
-        self.seen_hashes = set()          # message hashes published this run
+        # FIFO, not a set that gets cleared wholesale — a flood must not wipe
+        # all dedup state at once and let older messages replay.
+        self.seen_hashes = collections.OrderedDict()
         self.strategy = None
         self.pdu_mode = True
         self.cmgl_broken = False          # e.g. E1750: CMGL=4 never answers
@@ -266,6 +272,10 @@ class ModemWorker(threading.Thread):
         self._set_health(last_outbound=_now())
 
     def _send_one(self, number, text):
+        # Belt and braces: the API validates too, but the CLI reaches this
+        # directly and the text-mode branch interpolates into an AT command.
+        if not _E164_RE.fullmatch(number):
+            raise ValueError(f"invalid number: {number!r}")
         refs = []
         if self.pdu_mode:
             for pdu_hex, cmgs_len in sms_codec.build_submit_pdus(number, text):
@@ -275,23 +285,36 @@ class ModemWorker(threading.Thread):
         else:
             if not sms_codec.is_gsm7(text):
                 raise ValueError("text mode fallback supports GSM7 characters only")
+            body = text.replace("\r", " ").replace("\n", " ")   # never end entry early
             lines = self.port.execute(f'AT+CMGS="{number}"', timeout=10,
-                                      payload=text.encode("ascii", errors="replace"))
+                                      payload=body.encode("ascii", errors="replace"))
             refs.append(_cmgs_ref(lines))
         return refs
 
     # -- runtime PIN ---------------------------------------------------------
 
     def _do_pin(self, pin, reply):
+        # Re-check cap and SIM state HERE, in the worker thread: the API check
+        # is advisory only — concurrent requests would all pass it and each burn
+        # a real SIM attempt, which after three tries means a PUK lock.
+        cap = self.cfg.int("SIM_PIN_MAX_TRIES") + 2
+        if self.pin_submissions >= cap or self.health()["sim"] != "pin_required":
+            try:
+                reply.put_nowait(self.health()["sim"])
+            except queue.Full:
+                pass
+            return
         self.pin_submissions += 1
         self._runtime_pin = pin
         try:
-            sim.enter_pin(self.port, pin)
-        except (ATError, ValueError) as e:
-            self.log.warning("runtime PIN rejected: %s", self._redact(e))
-        time.sleep(3)
-        state = sim.cpin_state(self.port)
-        self._runtime_pin = None                       # keep it around only briefly
+            try:
+                sim.enter_pin(self.port, pin)
+            except (ATError, ValueError) as e:
+                self.log.warning("runtime PIN rejected: %s", self._redact(e))
+            time.sleep(3)
+            state = sim.cpin_state(self.port)
+        finally:
+            self._runtime_pin = None                   # never outlive this call
         self._set_health(sim=state)
         if state == "ready":
             self._after_sim_ready()
@@ -344,17 +367,26 @@ class ModemWorker(threading.Thread):
             if index is not None:
                 self._delete_indices([index])
             return
-        result = self.assembler.add(decoded, index)
-        if result:
-            self._publish(*result)
+        try:
+            result = self.assembler.add(decoded, index)
+            if result:
+                self._publish(*result)
+        except Exception as e:
+            # Never let one unprocessable message crash-loop the worker: the
+            # message would be re-read from SIM storage on every reconnect and
+            # the alerting channel would stay down permanently.
+            self.log.error("failed to handle inbound message (index %s): %s",
+                           index, self._redact(e))
+            if index is not None:
+                self._delete_indices([index])
 
     def _publish(self, msg, indices):
         h = receive.message_hash(msg["sender"], msg["scts"], msg["text"])
         if h in self.seen_hashes:
             return
-        self.seen_hashes.add(h)
-        if len(self.seen_hashes) > 5000:
-            self.seen_hashes.clear()
+        self.seen_hashes[h] = True
+        while len(self.seen_hashes) > 5000:
+            self.seen_hashes.popitem(last=False)
         msg["received_at"] = _now()
         msg["hash"] = h
         body = msg["text"] if self.cfg.bool("LOG_BODIES") else f"<{len(msg['text'])} chars>"
