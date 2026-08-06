@@ -182,10 +182,13 @@ Capability-probe with `AT+CNMI=?`, `AT+CPMS=?`, `AT+CMGL=?`, then select (record
    `GTG_POLL_INTERVAL` (default 15 s).
 4. Poll ALL + dedup by (storage, index, sender, timestamp, body-hash).
 
-**Reconciliation** (always on, regardless of strategy): every `GTG_RECONCILE_INTERVAL`
-(default 300 s) list stored messages to catch anything missed across restarts/reconnects —
-the doc's "notification + periodic reconciliation" combo. Storage: probe `AT+CPMS=?`, prefer
-`"SM"` but use what the modem offers.
+**Always-on stored-message scan** (regardless of strategy): every `GTG_POLL_INTERVAL`
+(default 15 s) process everything in modem storage — CMTI/CMT are the fast path, the scan
+is the safety net, so broken/flaky notifications can never stall inbound for more than one
+interval. The scan uses `AT+CMGL=4`, falling back to a **`CMGR` index sweep** when CMGL is
+unusable (field-tested: the E1750 never answers a bare `CMGL=4` while per-index `CMGR`
+works fine — and its indexes are 0-based). Storage: probe `AT+CPMS=?`, prefer `"SM"` but
+use what the modem offers.
 
 **Deletion from modem storage** follows the delivery policy in 3.7 (delivered-to-≥1-subscriber,
 or persisted-to-store). Failed deletes are retried; dedup prevents double-processing.
@@ -374,8 +377,7 @@ the env names minus the prefix (`sim_pin = 1234` ≙ `GTG_SIM_PIN=1234`).
 | `GTG_STORE_DIR` | *(unset = no persistence)* | opt-in file store for message history (3.7) |
 | `GTG_RING_SIZE` | `100` | in-RAM replay ring for reconnecting subscribers |
 | `GTG_WEBUI` | `true` | serve the embedded web UI at `/ui` (set `false` to disable) |
-| `GTG_POLL_INTERVAL` | `15` | inbound poll seconds (fallback strategies) |
-| `GTG_RECONCILE_INTERVAL` | `300` | stored-message reconciliation seconds |
+| `GTG_POLL_INTERVAL` | `15` | always-on stored-message scan interval (safety net under CMTI) |
 | `GTG_MAX_SUBSCRIBERS` | `20` | concurrent SSE connections cap |
 | `GTG_SEND_RATE` | `30/hour` | outbound rate limit (`N/minute`, `N/hour`, `N/day`; `0` = off) |
 | `GTG_MODESWITCH` | `true` | allow usb_modeswitch for known IDs |

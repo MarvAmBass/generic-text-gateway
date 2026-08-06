@@ -29,6 +29,7 @@ class ModemWorker(threading.Thread):
         self.seen_hashes = set()          # message hashes published this run
         self.strategy = None
         self.pdu_mode = True
+        self.cmgl_broken = False          # e.g. E1750: CMGL=4 never answers
         self.modem_info = {}
         self.port_info = {}
         self.pin_submissions = 0          # runtime PIN submissions (lifetime cap)
@@ -180,7 +181,7 @@ class ModemWorker(threading.Thread):
         receive.select_storage(self.port, self.log)
         self.strategy = receive.select_cnmi(self.port, self.log)
         self._set_health(state="ready", receive_strategy=self.strategy)
-        self._reconcile()
+        self._scan_stored()
 
     def _refresh_network_health(self):
         reg_state, reg_desc = sim.registration(self.port)
@@ -196,7 +197,7 @@ class ModemWorker(threading.Thread):
     # -- serve loop ----------------------------------------------------------
 
     def _serve(self):
-        last_poll = last_reconcile = last_net = time.monotonic()
+        last_poll = last_net = time.monotonic()
         while not self.stop_event.is_set():
             try:
                 job = self.jobs.get(timeout=0.5)
@@ -209,13 +210,12 @@ class ModemWorker(threading.Thread):
                     self.port.drain_urcs(0.2)
                 now = time.monotonic()
                 sim_ready = self.health()["sim"] == "ready"
-                if sim_ready and self.strategy == "poll" and \
-                        now - last_poll >= self.cfg.int("POLL_INTERVAL"):
+                # Always-on stored-message scan: CMTI/CMT are the fast path, the
+                # scan is the safety net — a modem with broken notifications can
+                # never stall inbound for more than POLL_INTERVAL.
+                if sim_ready and now - last_poll >= self.cfg.int("POLL_INTERVAL"):
                     last_poll = now
-                    self._poll_unread()
-                if sim_ready and now - last_reconcile >= self.cfg.int("RECONCILE_INTERVAL"):
-                    last_reconcile = now
-                    self._reconcile()
+                    self._scan_stored()
                 if now - last_net >= 60:
                     last_net = now
                     if sim_ready:
@@ -330,7 +330,7 @@ class ModemWorker(threading.Thread):
                 if pdu:
                     self._process_pdu(pdu, index)
             else:
-                self._reconcile()                       # text mode: re-list
+                self._scan_stored()                     # text mode: re-list
         except ATError as e:
             self.log.warning("CMGR %s failed: %s", index, e)
 
@@ -373,23 +373,51 @@ class ModemWorker(threading.Thread):
                 self.log.warning("CMGD %s failed (will retry via reconcile): %s",
                                  index, e)
 
-    def _poll_unread(self):
-        self._list_stored("AT+CMGL=0" if self.pdu_mode else 'AT+CMGL="REC UNREAD"')
-
-    def _reconcile(self):
-        self._list_stored("AT+CMGL=4" if self.pdu_mode else 'AT+CMGL="ALL"')
-
-    def _list_stored(self, cmd):
-        try:
-            lines = self.port.execute(cmd, timeout=30, collect_extra=lambda l: True)
-        except ATError as e:
-            self.log.debug("%s failed: %s", cmd, e)
+    def _scan_stored(self):
+        """Process everything in modem storage: CMGL, with a CMGR index sweep as
+        fallback (some firmware — e.g. the E1750 — never answers a bare CMGL=4)."""
+        if not self.pdu_mode:
+            self._list_text_cmgl()
             return
-        if self.pdu_mode:
-            for index, pdu in receive.parse_cmgl_pdu(lines):
+        if not self.cmgl_broken:
+            try:
+                lines = self.port.execute("AT+CMGL=4", timeout=15,
+                                          collect_extra=lambda l: True)
+                entries = receive.parse_cmgl_pdu(lines)
+                for index, pdu in entries:
+                    self._process_pdu(pdu, index)
+                if entries:
+                    return
+            except (ATError, ATTimeout) as e:
+                self.cmgl_broken = True
+                self.log.warning("CMGL listing unusable on this modem (%s) — "
+                                 "switching to CMGR index sweep", e)
+        # CMGL yielded nothing: trust CPMS and sweep indexes directly.
+        used, total = receive.storage_usage(self.port)
+        if not used:
+            return
+        found = 0
+        for index in range(total or 20):
+            if found >= used:
+                break
+            try:
+                lines = self.port.execute(f"AT+CMGR={index}", timeout=10,
+                                          collect_extra=lambda l: True)
+            except ATError:
+                continue                                 # empty/invalid slot
+            pdu = receive.parse_cmgr_pdu(lines)
+            if pdu:
+                found += 1
                 self._process_pdu(pdu, index)
-        else:
-            self._process_text_cmgl(lines)
+
+    def _list_text_cmgl(self):
+        try:
+            lines = self.port.execute('AT+CMGL="ALL"', timeout=30,
+                                      collect_extra=lambda l: True)
+        except (ATError, ATTimeout) as e:
+            self.log.debug("CMGL failed: %s", e)
+            return
+        self._process_text_cmgl(lines)
 
     def _process_text_cmgl(self, lines):
         """Minimal text-mode listing: '+CMGL: idx,stat,"sender",,"ts"' + body line."""

@@ -24,7 +24,6 @@ class Config:
         "RING_SIZE": "100",
         "WEBUI": "true",
         "POLL_INTERVAL": "15",
-        "RECONCILE_INTERVAL": "300",
         "MAX_SUBSCRIBERS": "20",
         "SEND_RATE": "30/hour",
         "MODESWITCH": "true",
