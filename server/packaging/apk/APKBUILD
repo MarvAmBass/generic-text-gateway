@@ -6,7 +6,10 @@ pkgdesc="USB modem SMS gateway server (HTTPS API + web UI)"
 url="https://github.com/MarvAmBass/generic-text-gateway"
 arch="noarch"
 license="custom"
-depends="python3 py3-pyserial openssl usb-modeswitch"
+# usb-modeswitch is optional: known ZeroCD sticks (e.g. Huawei E1750) are
+# switched by the built-in usbdevfs implementation; install usb-modeswitch only
+# as a fallback for untested device variants.
+depends="python3 py3-pyserial openssl"
 subpackages="$pkgname-openrc"
 install="$pkgname.pre-install"
 options="!check"

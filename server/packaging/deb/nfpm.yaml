@@ -13,6 +13,9 @@ depends:
   - python3
   - python3-serial
   - openssl
+recommends:
+  # optional fallback — known ZeroCD sticks are switched by the built-in
+  # usbdevfs implementation
   - usb-modeswitch
 contents:
   - src: ./server/gtg_server

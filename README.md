@@ -40,11 +40,15 @@ docker compose exec gtg-server gtg-server fingerprint   # pin for your clients
 Or natively on Alpine:
 
 ```sh
-apk add python3 py3-pyserial openssl usb-modeswitch
 apk add --allow-untrusted generic-text-gateway-*.apk    # from the GitHub release
 vi /etc/conf.d/gtg-server                               # set GTG_TOKENS etc.
 rc-update add gtg-server default && rc-service gtg-server start
 ```
+
+The package pulls `python3`, `py3-pyserial` and `openssl`. **`usb-modeswitch` is
+optional**: sticks in the built-in switch table (see below) are flipped out of their
+fake-CD-ROM mode by a pure-stdlib `usbdevfs` implementation — no external tool. Install
+`usb-modeswitch` only as a fallback for untested device variants.
 
 Probe your hardware first if unsure: `gtg-server probe` prints every candidate serial
 port, what answered `AT`, and the modem's identity.
@@ -99,12 +103,21 @@ The full reference tables are in [PLAN.md](PLAN.md) §3.11 (server) and §4.4 (c
 
 ## Tested hardware
 
-| Modem | USB IDs | Notes |
-|---|---|---|
-| Huawei E1750 | `12d1:1446` → `12d1:1001` | ZeroCD switch via usb_modeswitch; AT port = first `ttyUSB` |
+| Modem | USB IDs | Mode switch | Notes |
+|---|---|---|---|
+| Huawei E1750 | `12d1:1446` → `12d1:1001` | built-in (no usb-modeswitch needed) | AT port = first `ttyUSB` |
 
 Any stick that exposes a serial AT port and answers `AT+CMGF`/`AT+CMGS` should work —
 run `gtg-server probe` and open an issue with the output to get it added here.
+
+**Add native support for your stick — PRs welcome!** ZeroCD mode switching lives in one
+table: `KNOWN_SWITCHES` in `server/gtg_server/modem/modeswitch.py`. A recipe is just the
+installer-mode USB ID, the bulk switch message (find it for your device in usb_modeswitch's
+database, `/usr/share/usb_modeswitch/`), the interface/endpoint, and the expected
+post-switch USB IDs. If your stick works via the `usb_modeswitch` fallback today, adding
+its recipe makes it work with zero external dependencies — please open a pull request with
+the recipe and your `gtg-server probe` output. Never add guessed messages: only recipes
+verified on real hardware.
 
 ## Development
 

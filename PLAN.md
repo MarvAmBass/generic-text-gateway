@@ -105,28 +105,35 @@ useful for bug reports), `send` (CLI one-shot send for testing).
 
 ### 3.2 Mode switching (`modem/modeswitch.py`)
 
-Many sticks enumerate first as USB mass storage ("ZeroCD"). Strategy, in order:
+Many sticks enumerate first as USB mass storage ("ZeroCD"). The "switch" is just a known
+31-byte USB mass-storage CBW written to the stick's bulk endpoint — Linux exposes exactly
+that via `usbdevfs` ioctls on `/dev/bus/usb/*`, so **no external tool or library is
+required**. Strategy, in order:
 
-1. If `usb_modeswitch` binary is present (declared package dependency): invoke it for USB IDs
-   found in the internal `KNOWN_SWITCHES` table, e.g.
+1. **Built-in switcher** (pure stdlib, `usbdevfs.py`): for USB IDs in the internal
+   `KNOWN_SWITCHES` table, detach the kernel driver, claim the interface, bulk-write the
+   recipe's message (ctypes ioctls; struct sizes computed at import so 32-/64-bit both
+   work). E.g.:
 
    ```python
    KNOWN_SWITCHES = {
        (0x12D1, 0x1446): {           # Huawei ZeroCD (tested: E1750)
            "name": "Huawei ZeroCD",
-           "args": ["-v", "0x12d1", "-p", "0x1446", "-J"],
+           "message": HUAWEI_ZEROCD_MESSAGE,     # 31-byte CBW, field-tested
+           "interface": 0, "endpoint": 0x01,
+           "helper_args": ["-v", "0x12d1", "-p", "0x1446", "-J"],
            "expected_ids": [(0x12D1, 0x1001)],   # list — firmware variants differ
        },
    }
    ```
 
-2. Wait for the device to disappear and reappear with an expected ID, then wait for
+2. **`usb_modeswitch` fallback** — optional (Recommends, not Depends): used only when the
+   built-in write fails; its community device database also covers quirky variants.
+3. Wait for the device to disappear and reappear with an expected ID, then wait for
    `/dev/ttyUSB*` nodes (with timeout; `option`/`usbserial` usually auto-load — the server
    never calls modprobe itself; packaging docs cover it).
-3. **Never** send a guessed switching message to an unknown USB ID. Unknown storage-mode
+4. **Never** send a guessed switching message to an unknown USB ID. Unknown storage-mode
    devices are reported in health as "possible unswitched modem (VID:PID)" with a docs link.
-4. PyUSB-based switching: **not in v1** (avoids a libusb dependency); the table + external
-   helper covers the field-tested path.
 
 Re-run the switch check whenever the AT port vanishes and a known storage-mode ID reappears
 (stick reset back to ZeroCD).

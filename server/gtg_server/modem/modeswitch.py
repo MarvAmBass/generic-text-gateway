@@ -1,7 +1,13 @@
-"""ZeroCD mode switching for known USB IDs via the usb_modeswitch helper.
+"""ZeroCD mode switching for known USB IDs.
+
+Two methods, tried in order:
+1. Built-in (pure stdlib): write the device's known switch message directly via
+   usbdevfs — no external dependency (see usbdevfs.py).
+2. usb_modeswitch, IF installed: optional fallback; its community database also
+   covers quirky variants the built-in table doesn't.
 
 Never sends a guessed switching command to an unknown device — unknown
-storage-mode IDs are only reported in health.
+storage-mode IDs are only reported in health/logs.
 """
 import glob
 import os
@@ -9,11 +15,23 @@ import shutil
 import subprocess
 import time
 
+from . import usbdevfs
+
+# The standard Huawei ZeroCD switch message: a 31-byte USB mass-storage CBW
+# (SCSI START STOP UNIT / eject variant). Field-tested on the E1750.
+HUAWEI_ZEROCD_MESSAGE = (
+    "55534243123456780000000000000011"
+    "062000000100000000000000000000"
+)
+
 # (vid, pid) -> switch recipe. Only field-tested devices belong here.
 KNOWN_SWITCHES = {
     (0x12D1, 0x1446): {
         "name": "Huawei ZeroCD (E1750 & friends)",
-        "args": ["-v", "0x12d1", "-p", "0x1446", "-J"],
+        "message": HUAWEI_ZEROCD_MESSAGE,
+        "interface": 0,
+        "endpoint": 0x01,
+        "helper_args": ["-v", "0x12d1", "-p", "0x1446", "-J"],
         "expected_ids": [(0x12D1, 0x1001), (0x12D1, 0x14AC), (0x12D1, 0x1436)],
     },
 }
@@ -40,30 +58,35 @@ def storage_mode_devices():
     return [i for i in present if i in KNOWN_SWITCHES]
 
 
-def unknown_storage_hint(logger):
-    """Log a hint for present-but-unknown Huawei/ZTE-style installer IDs. Best effort."""
-    return None
-
-
-def switch(vid_pid, logger, timeout=30.0):
-    """Run usb_modeswitch for a known ID and wait for an expected target ID.
-
-    Returns True once the target ID (or any ttyUSB port) appears.
-    """
-    recipe = KNOWN_SWITCHES[vid_pid]
-    binary = shutil.which("usb_modeswitch")
-    if not binary:
-        logger.warning("usb_modeswitch not installed — cannot switch %04x:%04x",
-                       *vid_pid)
+def _switch_builtin(vid_pid, recipe, logger):
+    if "message" not in recipe:
         return False
-    logger.info("mode-switching %04x:%04x (%s)", vid_pid[0], vid_pid[1],
-                recipe["name"])
     try:
-        subprocess.run([binary] + recipe["args"], check=False, timeout=20,
+        return usbdevfs.send_bulk_message(
+            vid_pid[0], vid_pid[1], recipe["message"],
+            interface=recipe.get("interface", 0),
+            endpoint=recipe.get("endpoint", 0x01), logger=logger)
+    except (OSError, ValueError) as e:
+        logger.warning("built-in modeswitch failed for %04x:%04x: %s",
+                       vid_pid[0], vid_pid[1], e)
+        return False
+
+
+def _switch_helper(vid_pid, recipe, logger):
+    binary = shutil.which("usb_modeswitch")
+    if not binary or "helper_args" not in recipe:
+        return False
+    logger.info("falling back to usb_modeswitch for %04x:%04x", *vid_pid)
+    try:
+        subprocess.run([binary] + recipe["helper_args"], check=False, timeout=20,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
     except subprocess.TimeoutExpired:
         logger.warning("usb_modeswitch timed out")
         return False
+
+
+def _wait_switched(recipe, logger, timeout):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         present = usb_ids()
@@ -77,6 +100,21 @@ def switch(vid_pid, logger, timeout=30.0):
         time.sleep(1.0)
     logger.warning("device did not reappear with an expected ID after switching")
     return False
+
+
+def switch(vid_pid, logger, timeout=30.0):
+    """Switch one known device: built-in message first, usb_modeswitch fallback."""
+    recipe = KNOWN_SWITCHES[vid_pid]
+    logger.info("mode-switching %04x:%04x (%s)", vid_pid[0], vid_pid[1],
+                recipe["name"])
+    sent = _switch_builtin(vid_pid, recipe, logger)
+    if not sent:
+        sent = _switch_helper(vid_pid, recipe, logger)
+    if not sent:
+        logger.warning("no working switch method for %04x:%04x (built-in failed, "
+                       "usb_modeswitch not installed?)", *vid_pid)
+        return False
+    return _wait_switched(recipe, logger, timeout)
 
 
 def maybe_switch(logger):
