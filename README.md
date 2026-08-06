@@ -32,7 +32,7 @@ See [PLAN.md](PLAN.md) for the full architecture and design decisions.
 
 ```sh
 cd server
-# edit docker-compose.yml: set GTG_TOKENS, check the /dev/ttyUSB* device mappings
+# edit docker-compose.yml: set your GTG_USER_* lines, check the /dev/ttyUSB* mappings
 docker compose up -d --build
 docker compose exec gtg-server gtg-server fingerprint   # pin for your clients
 ```
@@ -41,7 +41,7 @@ Or natively on Alpine:
 
 ```sh
 apk add --allow-untrusted generic-text-gateway-*.apk    # from the GitHub release
-vi /etc/conf.d/gtg-server                               # set GTG_TOKENS etc.
+vi /etc/conf.d/gtg-server                               # set GTG_USER_* lines etc.
 rc-update add gtg-server default && rc-service gtg-server start
 ```
 
@@ -80,8 +80,8 @@ Incoming SMS arrive as HA event `sms_received` (payload: `phoneNumber`, `message
 
 ## API (server)
 
-All endpoints under HTTPS, `Authorization: Bearer <token>` (scoped tokens via
-`GTG_TOKENS=all:tok1,send:tok2,receive:tok3`) or `Basic` (web UI credentials).
+All endpoints under HTTPS. `Authorization: Bearer <token>` (system principals) or
+`Basic <name>:<password-or-token>` (humans / web UI) — see Users & tokens below.
 
 | Endpoint | Purpose |
 |---|---|
@@ -130,10 +130,10 @@ config; the plaintext token lives solely with its consumer (your client/HA):
 # Web UI password -> PBKDF2-SHA256 (interactive, nothing stored or echoed).
 # Output is a ready-to-paste config line, single quotes included:
 gtg-server hash-password
-#   export GTG_WEBUI_PASS_HASH='pbkdf2_sha256$210000$<salt>$<dk>'
+#   export GTG_USER_<name>='<scope>:pbkdf2_sha256$210000$<salt>$<dk>'
 
 # API token -> sha256 (type the token on stdin, keeps it out of shell history).
-# The fragment goes inside your GTG_TOKENS value:
+# The fragment goes inside a GTG_USER_<name> value:
 gtg-server hash-token
 #   sha256:<64 hex>
 ```
@@ -141,14 +141,13 @@ gtg-server hash-token
 Put the results in your config:
 
 ```sh
-export GTG_TOKENS='receive:sha256:<hex>,send:sha256:<hex>'
-export GTG_WEBUI_PASS_HASH='pbkdf2_sha256$210000$<salt>$<dk>'
+export GTG_USER_ha_inbox='receive:sha256:<hex>'
+export GTG_USER_marvin='all:pbkdf2_sha256$210000$<salt>$<dk>'
 ```
 
 ⚠️ **Single quotes are mandatory** for the password hash: it contains `$` characters —
 double quotes (or no quotes) make the shell expand them away when the service sources
-the file, silently breaking login. `GTG_WEBUI_PASS_HASH` takes precedence if the plain
-`GTG_WEBUI_PASS` is also set. A hash cannot be reversed: if a plaintext token is lost,
+the file, silently breaking login. A hash cannot be reversed: if a plaintext token is lost,
 generate a new token and replace the hash. The SIM PIN (`GTG_SIM_PIN`) cannot be
 hashed — it must be sent to the modem as-is; protect the config file (mode 600)
 instead.

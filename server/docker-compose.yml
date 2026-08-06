@@ -16,11 +16,12 @@ services:
     ports:
       - "8443:8443"
     environment:
-      # REQUIRED — generate with: openssl rand -hex 24
-      - GTG_TOKENS=all:change-me-please
-      # Web UI login (https://host:8443/ui). Unset -> any user + an API token works.
-      - GTG_WEBUI_USER=admin
-      - GTG_WEBUI_PASS=change-me-too
+      # REQUIRED — one GTG_USER_<name>='scope:credential' per identity.
+      # Humans: hashed password via `gtg-server hash-password` (Basic auth / web UI).
+      # Systems: a token per integration (generate: openssl rand -hex 24).
+      - GTG_USER_admin=all:change-me-please
+      - GTG_USER_homeassistant=send:change-me-too
+      - GTG_USER_ha_inbox=receive:change-me-three
       # SIM PIN: leave unset to enter it via the web UI after each start (never
       # stored), or set it here if you accept it living in this file.
       # - GTG_SIM_PIN=0000

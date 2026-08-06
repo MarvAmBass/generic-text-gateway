@@ -25,7 +25,6 @@ class GatewayHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, family, sockaddr, handler, ctx):
         self.address_family = family
-        self._tls_ctx = ctx
         super().__init__(sockaddr[:2], handler)
         if ctx is not None:
             self.socket = ctx.wrap_socket(self.socket, server_side=True)
@@ -50,7 +49,7 @@ class ApiState:
     """Shared state handed to every request handler."""
 
     def __init__(self, cfg, hub, outbox, worker, auth, backoff, rate, store,
-                 logger, tls_fingerprint):
+                 logger):
         self.cfg = cfg
         self.hub = hub
         self.outbox = outbox
@@ -60,7 +59,6 @@ class ApiState:
         self.rate = rate
         self.store = store
         self.log = logger
-        self.tls_fingerprint = tls_fingerprint
         self.subscriber_count = 0
         self.sub_lock = threading.Lock()
         self.webui_html = self._load_webui() if cfg.bool("WEBUI") else None

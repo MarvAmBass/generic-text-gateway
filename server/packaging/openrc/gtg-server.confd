@@ -1,15 +1,16 @@
 # Configuration for /etc/init.d/gtg-server — every GTG_* variable exported here
 # reaches the server (see PLAN.md 3.11 for the full reference).
 
-# REQUIRED: API tokens (generate: openssl rand -hex 24)
-#export GTG_TOKENS="all:change-me"
+# REQUIRED: one GTG_USER_<name>='scope:credential' per identity (scopes:
+# send/receive/all). Humans: hashed password (`gtg-server hash-password` prints
+# a paste-ready line). Systems: a token each (openssl rand -hex 24), plaintext
+# or sha256-hashed (`gtg-server hash-token`). Revoke one = delete its line.
+#export GTG_USER_marvin='all:pbkdf2_sha256$210000$<salt>$<dk>'
+#export GTG_USER_homeassistant="send:change-me"
+#export GTG_USER_ha_inbox="receive:change-me"
 
 # Listen: loopback only by default. For LAN clients bind explicitly:
 #export GTG_LISTEN="0.0.0.0:8443,[::]:8443"
-
-# Web UI login (https://host:8443/ui)
-#export GTG_WEBUI_USER="admin"
-#export GTG_WEBUI_PASS="change-me"
 
 # SIM PIN: leave unset to enter it manually via the web UI after each boot
 # (memory-only), or set it here if you accept it living in this file.

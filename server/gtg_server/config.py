@@ -18,15 +18,11 @@ class Config:
         "TLS_KEY": "",
         "TLS_SANS": "",
         "TLS_INSECURE_OK": "false",
-        "TOKENS": "",
         "ALLOWED_RECIPIENTS": "",
         "DATA_DIR": "/var/lib/generic-text-gateway",
         "STORE_DIR": "",
         "RING_SIZE": "100",
         "WEBUI": "true",
-        "WEBUI_USER": "",
-        "WEBUI_PASS": "",
-        "WEBUI_PASS_HASH": "",
         "POLL_INTERVAL": "15",
         "RECONCILE_INTERVAL": "300",
         "MAX_SUBSCRIBERS": "20",
@@ -40,23 +36,8 @@ class Config:
     def __init__(self, environ=None):
         env = os.environ if environ is None else environ
         vals = dict(self.DEFAULTS)
+        users = {}                    # named principals: user_<name> / GTG_USER_<name>
         path = env.get(self.PREFIX + "CONFIG", vals["CONFIG"])
-        if path and os.path.isfile(path):
-            cp = configparser.ConfigParser()
-            cp.read(path)
-            if cp.has_section(self.SECTION):
-                for key, value in cp.items(self.SECTION):
-                    ku = key.upper()
-                    if ku in vals:
-                        vals[ku] = value
-        for key in vals:
-            ev = env.get(self.PREFIX + key)
-            if ev is not None:
-                vals[key] = ev
-        self._v = vals
-
-        # Named principals: GTG_USER_<name> env vars / user_<name> INI keys.
-        users = {}
         if path and os.path.isfile(path):
             cp = configparser.ConfigParser()
             cp.read(path)
@@ -64,10 +45,17 @@ class Config:
                 for key, value in cp.items(self.SECTION):
                     if key.lower().startswith("user_"):
                         users[key[len("user_"):].lower()] = value
+                    elif key.upper() in vals:
+                        vals[key.upper()] = value
+        for key in vals:
+            ev = env.get(self.PREFIX + key)
+            if ev is not None:
+                vals[key] = ev
         user_prefix = self.PREFIX + "USER_"
         for key, value in env.items():
             if key.startswith(user_prefix) and len(key) > len(user_prefix):
                 users[key[len(user_prefix):].lower()] = value
+        self._v = vals
         self._users = users
 
     def users(self):

@@ -1,14 +1,14 @@
 # /etc/default/gtg-server — GTG_* variables for the systemd unit.
 # Full reference: PLAN.md 3.11 in the repository.
 
-# REQUIRED: API tokens (generate: openssl rand -hex 24)
-#GTG_TOKENS=all:change-me
+# REQUIRED: one GTG_USER_<name>=scope:credential per identity (send/receive/all).
+# NOTE: systemd EnvironmentFile does no shell expansion — values verbatim, no quotes.
+#GTG_USER_marvin=all:pbkdf2_sha256$210000$<salt>$<dk>
+#GTG_USER_homeassistant=send:change-me
+#GTG_USER_ha_inbox=receive:change-me
 
 # Listen: loopback only by default. For LAN clients bind explicitly:
 #GTG_LISTEN=0.0.0.0:8443,[::]:8443
-
-#GTG_WEBUI_USER=admin
-#GTG_WEBUI_PASS=change-me
 
 # Leave unset to enter the SIM PIN via the web UI after each boot (memory-only):
 #GTG_SIM_PIN=0000

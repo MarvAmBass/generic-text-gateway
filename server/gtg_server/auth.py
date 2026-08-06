@@ -1,17 +1,17 @@
-"""Authentication: one mechanism (the Authorization header), two forms.
+"""Authentication: named principals, one mechanism (the Authorization header).
 
-Bearer <token>      -> API clients; token scope from GTG_TOKENS ("scope:token,...").
-Basic <user:pass>   -> web UI. With GTG_WEBUI_USER set, checks user+pass -> "all" scope.
-                       Without it, any username + an API token as password grants that
-                       token's scope.
+Every human and every system gets its own identity via GTG_USER_<name> =
+"scope:credential" — individually revocable, attributed in logs. Credential kinds:
 
-Hashed at-rest storage (recommended — no plaintext secrets in config):
-- token entries may be "scope:sha256:<64-hex>" (hash of the token; tokens are
-  high-entropy random strings, so an unsalted fast hash is appropriate);
-- the web UI password may be stored as GTG_WEBUI_PASS_HASH =
-  "pbkdf2_sha256$<iterations>$<salt-hex>$<dk-hex>" (generate with
-  `gtg-server hash-password`). Verified credentials are cached in memory (as
-  hashes) so per-request Basic auth doesn't re-run the KDF every time.
+- pbkdf2_sha256$<iter>$<salt>$<dk>  -> password hash (humans, Basic auth only;
+                                       generate with `gtg-server hash-password`)
+- sha256:<64-hex>                   -> hashed token (systems, Bearer or Basic)
+- anything else                     -> plaintext token (systems, Bearer or Basic)
+
+Bearer <secret> matches token credentials (never password hashes — no username to
+attribute). Basic <name>:<secret> matches that principal's own credential only.
+Verified passwords are cached in memory (as hashes) so per-request Basic auth
+doesn't re-run the KDF.
 
 No cookies, no sessions. CSRF is a non-issue (no ambient credential); mutating
 endpoints additionally require Content-Type: application/json (enforced in api.py).
@@ -40,11 +40,7 @@ class Principal:
 
 
 def parse_users(pairs):
-    """{name: "scope:credential"} -> [Principal].
-
-    Credential forms: 'pbkdf2_sha256$...' (Basic-auth password hash),
-    'sha256:<64-hex>' (hashed token), anything else = plaintext token.
-    """
+    """{name: "scope:credential"} -> [Principal]."""
     principals = []
     for name, value in sorted(pairs.items()):
         scope, sep, cred = value.strip().partition(":")
@@ -62,23 +58,6 @@ def parse_users(pairs):
             kind = "plain"
         principals.append(Principal(name, scope, kind, cred))
     return principals
-
-
-def parse_tokens(spec):
-    """'all:tok1,send:sha256:<hex>' -> ({token: scope}, {sha256hex: scope})."""
-    plain, hashed = {}, {}
-    for entry in [e.strip() for e in spec.split(",") if e.strip()]:
-        scope, sep, token = entry.partition(":")
-        if not sep or scope not in SCOPES or not token:
-            raise ValueError(f"invalid GTG_TOKENS entry (want scope:token): {entry!r}")
-        if token.startswith("sha256:"):
-            digest = token[len("sha256:"):].lower()
-            if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
-                raise ValueError(f"invalid sha256 token hash in entry: {entry!r}")
-            hashed[digest] = scope
-        else:
-            plain[token] = scope
-    return plain, hashed
 
 
 def hash_token(token):
@@ -108,77 +87,10 @@ def _eq(a, b):
 
 
 class Auth:
-    def __init__(self, tokens=None, webui_user="", webui_pass="",
-                 webui_pass_hash="", users=None):
-        tokens = tokens if tokens is not None else ({}, {})
-        if isinstance(tokens, dict):          # backwards-compatible: plain dict
-            tokens = (tokens, {})
-        self.tokens, self.hashed_tokens = tokens
-        self.users = list(users or [])        # [Principal]
-        self.webui_user = webui_user
-        self.webui_pass = webui_pass
-        self.webui_pass_hash = webui_pass_hash
+    def __init__(self, users):
+        self.users = list(users)              # [Principal]
         self._kdf_cache = set()               # sha256 of verified name|pass pairs
         self._kdf_lock = threading.Lock()
-
-    def _check_token(self, token):
-        """Bearer-style secret -> (name, scope) or None. Never matches pbkdf2
-        credentials (passwords are Basic-only; no username to attribute)."""
-        for known, scope in self.tokens.items():
-            if _eq(known, token):
-                return "token", scope
-        digest = hash_token(token)
-        for known, scope in self.hashed_tokens.items():
-            if _eq(known, digest):
-                return "token", scope
-        for p in self.users:
-            if p.kind == "plain" and _eq(p.secret, token):
-                return p.name, p.scope
-            if p.kind == "sha256" and _eq(p.secret, digest):
-                return p.name, p.scope
-        return None
-
-    def _kdf_verify(self, name, password, encoded):
-        key = hashlib.sha256(f"{name}\x00{password}".encode()).hexdigest()
-        with self._kdf_lock:
-            if key in self._kdf_cache:
-                return True
-        if verify_password(password, encoded):
-            with self._kdf_lock:
-                self._kdf_cache.add(key)
-                if len(self._kdf_cache) > 32:
-                    self._kdf_cache.clear()
-            return True
-        return False
-
-    def _check_basic(self, user, password):
-        """-> (name, scope) or None."""
-        known_name = False
-        for p in self.users:
-            if not _eq(p.name, user):
-                continue
-            known_name = True
-            if p.kind == "pbkdf2" and self._kdf_verify(p.name, password, p.secret):
-                return p.name, p.scope
-            if p.kind == "sha256" and _eq(p.secret, hash_token(password)):
-                return p.name, p.scope
-            if p.kind == "plain" and _eq(p.secret, password):
-                return p.name, p.scope
-        if known_name:
-            # a known username binds strictly to its own credential — no fallback
-            return None
-        if self.webui_user and _eq(user, self.webui_user) and \
-                self._check_webui_password(password):
-            return self.webui_user, "all"
-        if not self.webui_user:
-            # unknown username + a valid token as the password (browser token login)
-            return self._check_token(password)
-        return None
-
-    def _check_webui_password(self, password):
-        if self.webui_pass_hash:
-            return self._kdf_verify(self.webui_user, password, self.webui_pass_hash)
-        return bool(self.webui_pass) and _eq(password, self.webui_pass)
 
     def check(self, header):
         """Authorization header value -> (name, scope), or None if unauthorized."""
@@ -195,6 +107,42 @@ class Auth:
                 return None
             return self._check_basic(user, password)
         return None
+
+    def _check_token(self, token):
+        """Bearer secret -> (name, scope) or None. Never matches pbkdf2."""
+        digest = hash_token(token)
+        for p in self.users:
+            if p.kind == "plain" and _eq(p.secret, token):
+                return p.name, p.scope
+            if p.kind == "sha256" and _eq(p.secret, digest):
+                return p.name, p.scope
+        return None
+
+    def _check_basic(self, user, password):
+        """Basic name:secret -> (name, scope) or None. Strict name binding."""
+        for p in self.users:
+            if not _eq(p.name, user):
+                continue
+            if p.kind == "pbkdf2" and self._kdf_verify(p.name, password, p.secret):
+                return p.name, p.scope
+            if p.kind == "sha256" and _eq(p.secret, hash_token(password)):
+                return p.name, p.scope
+            if p.kind == "plain" and _eq(p.secret, password):
+                return p.name, p.scope
+        return None
+
+    def _kdf_verify(self, name, password, encoded):
+        key = hashlib.sha256(f"{name}\x00{password}".encode()).hexdigest()
+        with self._kdf_lock:
+            if key in self._kdf_cache:
+                return True
+        if verify_password(password, encoded):
+            with self._kdf_lock:
+                self._kdf_cache.add(key)
+                if len(self._kdf_cache) > 32:
+                    self._kdf_cache.clear()
+            return True
+        return False
 
     @staticmethod
     def allows(scope, need):

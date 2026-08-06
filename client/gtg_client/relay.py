@@ -7,7 +7,7 @@ errors where the request provably never arrived.
 import hashlib
 import json
 import time
-import urllib.parse
+import urllib.error
 import urllib.request
 
 

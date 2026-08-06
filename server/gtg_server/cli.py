@@ -25,17 +25,13 @@ def cmd_run(cfg):
     log.info("generic-text-gateway %s", __version__)
 
     users = auth_mod.parse_users(cfg.users())
-    tokens_spec = cfg.str("TOKENS")
-    if not tokens_spec and not users:
-        log.error("no credentials configured — set GTG_USER_<name>='scope:credential' "
-                  "entries (recommended) and/or GTG_TOKENS")
+    if not users:
+        log.error("no principals configured — set at least one "
+                  "GTG_USER_<name>='scope:credential' (see `gtg-server hash-password`)")
         return 2
-    tokens = auth_mod.parse_tokens(tokens_spec) if tokens_spec else ({}, {})
-    auth = auth_mod.Auth(tokens, cfg.str("WEBUI_USER"), cfg.str("WEBUI_PASS"),
-                         cfg.str("WEBUI_PASS_HASH"), users=users)
-    if users:
-        log.info("principals: %s", ", ".join(f"{p.name}({p.scope},{p.kind})"
-                                             for p in users))
+    auth = auth_mod.Auth(users)
+    log.info("principals: %s", ", ".join(f"{p.name}({p.scope},{p.kind})"
+                                         for p in users))
 
     store = FileStore(cfg.str("STORE_DIR")) if cfg.str("STORE_DIR") else None
     if store:
@@ -53,20 +49,19 @@ def cmd_run(cfg):
     binds = resolve_binds(cfg.listen_addrs(), log)
     api.check_plaintext_binds(cfg, binds)
     ctx = None
-    fp = None
     if cfg.str("TLS") != "off":
         if cfg.str("TLS_CERT") and cfg.str("TLS_KEY"):
             cert, key = cfg.str("TLS_CERT"), cfg.str("TLS_KEY")
         else:
             sans = cfg.list("TLS_SANS") or tlsutil.default_sans()
             cert, key = tlsutil.ensure_cert(cfg.str("DATA_DIR"), sans, log)
-        fp = tlsutil.fingerprint(cert)
-        log.info("TLS certificate SHA-256 fingerprint (pin this in clients): %s", fp)
+        log.info("TLS certificate SHA-256 fingerprint (pin this in clients): %s",
+                 tlsutil.fingerprint(cert))
         ctx = tlsutil.build_context(cert, key)
 
     state = api.ApiState(cfg, hub, outbox, worker, auth,
                          auth_mod.Backoff(), auth_mod.RateLimit(cfg.str("SEND_RATE")),
-                         store, log.getChild("api"), fp)
+                         store, log.getChild("api"))
     servers = api.serve(state, binds, ctx, log)
     worker.start()
 
@@ -186,7 +181,7 @@ def cmd_hash_password():
 
 
 def cmd_hash_token():
-    """Read a token on stdin, print its GTG_TOKENS sha256 form."""
+    """Read a token on stdin, print its sha256 form for a GTG_USER_<name> value."""
     from . import auth as auth_mod
     token = sys.stdin.readline().strip()
     if not token:
@@ -206,7 +201,7 @@ def main(argv=None):
     sub.add_parser("probe", help="probe modems and print a JSON report")
     sub.add_parser("hash-password",
                    help="create a GTG_USER_<name> line with a hashed password")
-    sub.add_parser("hash-token", help="stdin token -> scope:sha256:<hex> form for GTG_TOKENS")
+    sub.add_parser("hash-token", help="stdin token -> sha256:<hex> for a GTG_USER value")
     send_p = sub.add_parser("send", help="one-shot test send via the modem")
     send_p.add_argument("--to", required=True)
     send_p.add_argument("--text", required=True)

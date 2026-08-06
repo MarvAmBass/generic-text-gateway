@@ -299,9 +299,9 @@ the server to the LAN is an explicit operator decision, e.g.
 | `GET /v1/history?box=inbox&before=…&limit=…` | receive | paged history — **404 unless `GTG_STORE_DIR` is configured**; pages over an internal index by message id — client input is never used to build file paths |
 
 **Auth mechanics — one mechanism, the `Authorization` header, two forms**:
-`Bearer <token>` (API clients) and `Basic <user:pass>` (web UI; Basic credentials count as
-`all` scope — with `GTG_WEBUI_USER` unset, Basic with an API token as the password grants
-that token's scope). No cookies, no server-side sessions, no CSRF tokens — there is no
+`Bearer <secret>` (system principals: plaintext/sha256 token credentials) and
+`Basic <name>:<secret>` (humans / web UI: matches only that principal's own credential —
+strict name binding). No cookies, no server-side sessions, no CSRF tokens — there is no
 ambient credential to ride; as belt-and-suspenders, mutating endpoints require
 `Content-Type: application/json`, which cross-site forms cannot send. `EventSource` can't
 set *custom* headers, but browsers attach cached Basic credentials to it automatically
@@ -341,12 +341,10 @@ solid delivery semantics without any server-side persistence.
   deleting its line. Credential kinds: `pbkdf2_sha256$…` (Basic-only),
   `sha256:<hex>`, plaintext token. Known usernames bind strictly to their own
   credential; API logs attribute actions to the principal name.
-- Legacy/simple: `GTG_TOKENS` = comma list of `scope:token` entries; scopes: `send`,
-  `receive`, `all`. Example: `GTG_TOKENS=all:s3cr3t-ops,send:ha-send-only`.
 - All comparisons via `hmac.compare_digest`.
 - **Hashed at-rest storage** (recommended): token entries as `scope:sha256:<64-hex>`
   (`gtg-server hash-token`; unsalted sha256 is fine — tokens are high-entropy random),
-  web UI password as `GTG_WEBUI_PASS_HASH` = `pbkdf2_sha256$iter$salt$dk`
+  human passwords as `pbkdf2_sha256$iter$salt$dk` credentials
   (`gtg-server hash-password`, 210k iterations; takes precedence over the plain var).
   Verified Basic credentials are cached in memory as hashes so per-request auth
   doesn't re-run the KDF. Plaintext secrets then exist only on the consumers.
@@ -370,15 +368,12 @@ the env names minus the prefix (`sim_pin = 1234` ≙ `GTG_SIM_PIN=1234`).
 | `GTG_TLS` | `auto` | `auto` \| `provided` \| `off` |
 | `GTG_TLS_CERT` / `GTG_TLS_KEY` | *(unset)* | external cert/key (implies `provided`) |
 | `GTG_TLS_SANS` | auto-detected | comma list for generated cert |
-| `GTG_USER_<name>` | — | `scope:credential` per principal (3.10); at least one credential source required |
-| `GTG_TOKENS` | *(unset)* | legacy anonymous `scope:token,...` entries |
+| `GTG_USER_<name>` | *(required, >=1)* | `scope:credential` per principal (3.10) |
 | `GTG_ALLOWED_RECIPIENTS` | *(unset = all)* | recipient allowlist/prefixes |
 | `GTG_DATA_DIR` | `/var/lib/generic-text-gateway` | generated TLS material only |
 | `GTG_STORE_DIR` | *(unset = no persistence)* | opt-in file store for message history (3.7) |
 | `GTG_RING_SIZE` | `100` | in-RAM replay ring for reconnecting subscribers |
 | `GTG_WEBUI` | `true` | serve the embedded web UI at `/ui` (set `false` to disable) |
-| `GTG_WEBUI_USER` / `GTG_WEBUI_PASS` | *(unset)* | web UI login; unset → UI accepts an API token as login |
-| `GTG_WEBUI_PASS_HASH` | *(unset)* | hashed alternative to `GTG_WEBUI_PASS` (wins if both set) |
 | `GTG_POLL_INTERVAL` | `15` | inbound poll seconds (fallback strategies) |
 | `GTG_RECONCILE_INTERVAL` | `300` | stored-message reconciliation seconds |
 | `GTG_MAX_SUBSCRIBERS` | `20` | concurrent SSE connections cap |
@@ -405,7 +400,7 @@ Optional (`GTG_WEBUI`, default on), aimed at "minimal but genuinely useful":
 - **One static, self-contained HTML file** (vanilla JS + inline CSS, no build step, no CDN,
   no external requests) embedded in the Python package and served by the same HTTPS server.
 - **Login = HTTP Basic** (see 3.8): `/ui` answers 401 + `WWW-Authenticate: Basic` until the
-  browser supplies `GTG_WEBUI_USER`/`GTG_WEBUI_PASS` (or any-user + API token as password).
+  browser supplies a principal's name + password/token (strict name binding).
   The browser's native prompt handles it once and then attaches the credentials to every
   fetch and EventSource call — zero auth JavaScript, zero cookies, zero server-side session
   state. Log out = close the browser (documented honestly). Same backoff-on-failure as the
@@ -578,7 +573,7 @@ generic-text-gateway/
   devices: ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyUSB2"]
   # for ZeroCD modeswitch also: "/dev/bus/usb"
   volumes: ["./data:/var/lib/generic-text-gateway"]
-  environment: [ "GTG_TOKENS=all:change-me", ... ]   # inline envs only
+  environment: [ "GTG_USER_admin=all:change-me", ... ]   # inline envs only
   ```
 - `client/Dockerfile`: `FROM alpine:3.20` + `apk add python3`. Compose: `network_mode: host`
   friendly, state volume, inline envs.
