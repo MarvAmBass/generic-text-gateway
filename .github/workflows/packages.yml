@@ -18,14 +18,16 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Build apk (unsigned, install with --allow-untrusted)
+      - name: Build apk (ephemeral CI key; install with --allow-untrusted)
         run: |
           adduser -D builder
           addgroup builder abuild
           chown -R builder:builder .
+          su builder -c 'abuild-keygen -a -n'
+          # trust the ephemeral key so the repo-index step succeeds
+          cp /home/builder/.abuild/*.rsa.pub /etc/apk/keys/
           su builder -c '
             set -e
-            abuild-keygen -a -n
             cd server/packaging/apk
             abuild -F -d
           '
