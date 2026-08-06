@@ -1,0 +1,28 @@
+services:
+  gtg-client:
+    build: .
+    # image: ghcr.io/marvambass/generic-text-gateway-client:latest
+    container_name: generic-text-client
+    restart: always
+    # host networking: Home Assistant on the same host reaches the send API via
+    # http://127.0.0.1:8082 and nothing is exposed to the LAN (GTC_LISTEN below).
+    network_mode: host
+    volumes:
+      - ./state:/var/lib/generic-text-client   # cursor + processed journal
+    environment:
+      # --- gateway server (REQUIRED) ---
+      - GTC_SERVER_URL=https://modem-host.example:8443
+      - GTC_SERVER_TOKEN=receive-token-here
+      - GTC_SERVER_SEND_TOKEN=send-token-here
+      # Pin from `gtg-server fingerprint` (or use GTC_SERVER_PIN_TOFU=true / GTC_SERVER_CA)
+      - GTC_SERVER_PIN_SHA256=paste-fingerprint-here
+      # --- Home Assistant relay ---
+      - GTC_HA_URL=http://homeassistant.example:8123
+      - GTC_HA_TOKEN=ha-long-lived-token-here
+      # - GTC_HA_EVENT=sms_received
+      # - GTC_HA_SENSOR=sensor.sms_received
+      # --- local send API ---
+      - GTC_LISTEN=localhost:8082
+      # Strongly recommended even on loopback (host networking shares 127.0.0.1):
+      - GTC_BASIC_USER=ha
+      - GTC_BASIC_PASS=change-me-please

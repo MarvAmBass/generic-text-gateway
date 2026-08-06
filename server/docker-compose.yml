@@ -1,0 +1,32 @@
+services:
+  gtg-server:
+    build: .
+    # image: ghcr.io/marvambass/generic-text-gateway-server:latest
+    container_name: generic-text-gateway
+    restart: always
+    # The modem's serial ports. Run `gtg-server probe` (or check dmesg) to find them.
+    devices:
+      - /dev/ttyUSB0
+      - /dev/ttyUSB1
+      - /dev/ttyUSB2
+      # For ZeroCD mode switching (stick shows up as a CD-ROM first) also map:
+      # - /dev/bus/usb
+    volumes:
+      - ./data:/var/lib/generic-text-gateway   # generated TLS cert/key (stable pin)
+    ports:
+      - "8443:8443"
+    environment:
+      # REQUIRED — generate with: openssl rand -hex 24
+      - GTG_TOKENS=all:change-me-please
+      # Web UI login (https://host:8443/ui). Unset -> any user + an API token works.
+      - GTG_WEBUI_USER=admin
+      - GTG_WEBUI_PASS=change-me-too
+      # SIM PIN: leave unset to enter it via the web UI after each start (never
+      # stored), or set it here if you accept it living in this file.
+      # - GTG_SIM_PIN=0000
+      # Persistence is OFF by default. To keep message history on disk:
+      # - GTG_STORE_DIR=/var/lib/generic-text-gateway/store
+      # - GTG_ALLOWED_RECIPIENTS=+1555,+49
+      # - GTG_SEND_RATE=30/hour
+      # - GTG_SERIAL_PORT=/dev/ttyUSB0     # skip auto-discovery
+      # - GTG_LOG_LEVEL=debug

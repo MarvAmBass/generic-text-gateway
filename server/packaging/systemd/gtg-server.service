@@ -1,0 +1,23 @@
+[Unit]
+Description=generic-text-gateway (USB modem SMS gateway server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gtg
+Group=gtg
+SupplementaryGroups=dialout
+EnvironmentFile=-/etc/default/gtg-server
+ExecStart=/usr/bin/gtg-server run
+Restart=always
+RestartSec=5
+StateDirectory=generic-text-gateway
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/generic-text-gateway
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

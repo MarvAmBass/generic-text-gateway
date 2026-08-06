@@ -1,0 +1,16 @@
+# /etc/default/gtg-server — GTG_* variables for the systemd unit.
+# Full reference: PLAN.md 3.11 in the repository.
+
+# REQUIRED: API tokens (generate: openssl rand -hex 24)
+#GTG_TOKENS=all:change-me
+
+# Listen: loopback only by default. For LAN clients bind explicitly:
+#GTG_LISTEN=0.0.0.0:8443,[::]:8443
+
+#GTG_WEBUI_USER=admin
+#GTG_WEBUI_PASS=change-me
+
+# Leave unset to enter the SIM PIN via the web UI after each boot (memory-only):
+#GTG_SIM_PIN=0000
+
+#GTG_STORE_DIR=/var/lib/generic-text-gateway/store

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>generic-text-gateway</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem;
+         max-width: 760px; margin-inline: auto; }
+  h1 { font-size: 1.2rem; margin: 0 0 .75rem; }
+  .strip { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
+  .chip { border: 1px solid #8884; border-radius: 999px; padding: .2rem .7rem;
+          font-size: .85rem; }
+  .chip b { font-weight: 600; }
+  .ok { border-color: #2a2; } .warn { border-color: #ca0; } .bad { border-color: #c33; }
+  section { border: 1px solid #8884; border-radius: 8px; padding: .8rem 1rem;
+            margin-bottom: 1rem; }
+  section h2 { font-size: 1rem; margin: 0 0 .6rem; }
+  form { display: flex; flex-wrap: wrap; gap: .5rem; }
+  input, textarea, button { font: inherit; padding: .45rem .6rem;
+          border: 1px solid #8886; border-radius: 6px; background: transparent;
+          color: inherit; }
+  input#to { flex: 1 1 180px; }
+  textarea { flex: 1 1 100%; min-height: 3.2rem; resize: vertical; }
+  button { cursor: pointer; }
+  button.primary { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+  #sendResult { flex-basis: 100%; font-size: .85rem; opacity: .85;
+                white-space: pre-wrap; }
+  ul#feed { list-style: none; margin: 0; padding: 0; }
+  ul#feed li { padding: .5rem 0; border-bottom: 1px solid #8883; }
+  ul#feed li .meta { font-size: .78rem; opacity: .7; }
+  ul#feed li .body { white-space: pre-wrap; word-break: break-word; }
+  #empty { opacity: .6; font-size: .9rem; }
+  dialog { border: 1px solid #8886; border-radius: 8px; padding: 1rem 1.2rem; }
+  dialog::backdrop { background: #0008; }
+  .hidden { display: none !important; }
+  #history table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  #history td { padding: .3rem .4rem; border-bottom: 1px solid #8883;
+                vertical-align: top; }
+</style>
+</head>
+<body>
+<h1>generic-text-gateway</h1>
+
+<div class="strip" id="strip">
+  <span class="chip" id="cState"><b>state</b> …</span>
+  <span class="chip" id="cSim"><b>SIM</b> …</span>
+  <span class="chip" id="cReg"><b>net</b> …</span>
+  <span class="chip" id="cSig"><b>signal</b> …</span>
+  <span class="chip" id="cLive"><b>feed</b> connecting…</span>
+</div>
+
+<section>
+  <h2>Send SMS</h2>
+  <form id="sendForm">
+    <input id="to" type="text" placeholder="+15551234567" required
+           autocomplete="off" spellcheck="false">
+    <textarea id="text" placeholder="Message…" required></textarea>
+    <button type="submit" class="primary">Send</button>
+    <div id="sendResult"></div>
+  </form>
+</section>
+
+<section>
+  <h2>Incoming (live)</h2>
+  <div id="empty">No messages yet — this feed shows SMS received while the page
+    is open<span id="storeNote"></span>.</div>
+  <ul id="feed"></ul>
+</section>
+
+<section id="history" class="hidden">
+  <h2>History <button id="histReload" type="button">reload</button></h2>
+  <table><tbody id="histBody"></tbody></table>
+  <button id="histMore" type="button">older…</button>
+</section>
+
+<dialog id="pinDialog">
+  <form id="pinForm" method="dialog">
+    <h2>SIM PIN required</h2>
+    <p style="font-size:.85rem;max-width:26rem">The SIM asks for its PIN and no PIN
+      is configured on the server. It will be used once and kept in memory only.</p>
+    <input id="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}"
+           placeholder="PIN" autocomplete="off" required>
+    <button type="submit" class="primary">Unlock</button>
+    <div id="pinResult" style="flex-basis:100%;font-size:.85rem"></div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let histOldest = null;
+
+function chip(el, text, cls) {
+  el.innerHTML = "<b>" + el.querySelector("b").textContent + "</b> " + text;
+  el.className = "chip" + (cls ? " " + cls : "");
+}
+
+function setHealth(h) {
+  const stateCls = h.state === "ready" ? "ok" :
+    (h.state === "registering" || h.state === "starting" ||
+     h.state === "sim_pin_required") ? "warn" : "bad";
+  chip($("cState"), h.state, stateCls);
+  chip($("cSim"), h.sim, h.sim === "ready" ? "ok" : "warn");
+  chip($("cReg"), (h.registration || "?") + (h.operator ? " · " + h.operator : ""),
+       (h.registration === "home" || h.registration === "roaming") ? "ok" : "warn");
+  const s = h.signal || {};
+  chip($("cSig"), s.percent != null ? s.percent + "% (" + s.dbm + " dBm)" : "?",
+       s.percent != null && s.percent > 30 ? "ok" : "warn");
+  if (h.state === "sim_pin_required" && !$("pinDialog").open) $("pinDialog").showModal();
+  if (h.state !== "sim_pin_required" && $("pinDialog").open) $("pinDialog").close();
+}
+
+function addFeedItem(m, prepend) {
+  $("empty").classList.add("hidden");
+  const li = document.createElement("li");
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = (m.sender || "?") + " · " + (m.scts || m.received_at || "") +
+    (m.partial ? " · INCOMPLETE MULTIPART" : "");
+  const body = document.createElement("div");
+  body.className = "body";
+  body.textContent = m.text || "";
+  li.append(meta, body);
+  prepend ? $("feed").prepend(li) : $("feed").append(li);
+  while ($("feed").children.length > 200) $("feed").lastChild.remove();
+}
+
+async function jfetch(url, opts) {
+  const r = await fetch(url, opts);
+  let data = null;
+  try { data = await r.json(); } catch (e) { /* empty */ }
+  return { ok: r.ok, status: r.status, data };
+}
+
+/* ---- initial health + store detection ---- */
+async function init() {
+  const h = await jfetch("/v1/health");
+  if (h.ok) {
+    setHealth(h.data);
+    if (h.data.store_enabled) {
+      $("history").classList.remove("hidden");
+      loadHistory(true);
+    } else {
+      $("storeNote").textContent =
+        " (persistence is off — nothing is stored on the server)";
+    }
+  }
+}
+
+/* ---- live feed ---- */
+function connectFeed() {
+  const es = new EventSource("/v1/subscribe");
+  es.addEventListener("hello", () => chip($("cLive"), "live", "ok"));
+  es.addEventListener("message", (ev) => addFeedItem(JSON.parse(ev.data), true));
+  es.addEventListener("health", (ev) => setHealth(JSON.parse(ev.data)));
+  es.addEventListener("gap", () =>
+    addFeedItem({ sender: "⚠ gateway", text: "some messages were skipped (slow subscriber)" }, true));
+  es.onerror = () => chip($("cLive"), "reconnecting…", "warn");
+}
+
+/* ---- send ---- */
+$("sendForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("sendResult").textContent = "sending…";
+  const r = await jfetch("/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ to: [$("to").value.trim()], text: $("text").value }),
+  });
+  if (!r.ok) {
+    $("sendResult").textContent = "✗ " + (r.data?.error?.message || r.status);
+    return;
+  }
+  const id = r.data.id;
+  $("sendResult").textContent = "queued (#" + id + ")…";
+  for (let i = 0; i < 40; i++) {
+    await new Promise((res) => setTimeout(res, 1000));
+    const s = await jfetch("/v1/messages/" + id);
+    if (!s.ok) break;
+    const st = s.data.state;
+    if (st === "queued" || st === "sending") continue;
+    $("sendResult").textContent =
+      (st === "submitted" ? "✓ submitted" : "✗ " + st) +
+      (s.data.refs?.length ? " (ref " + s.data.refs.join(",") + ")" : "") +
+      (s.data.error ? " — " + s.data.error : "");
+    if (st === "submitted") $("text").value = "";
+    return;
+  }
+  $("sendResult").textContent = "? no final state (check /v1/messages/" + id + ")";
+});
+
+/* ---- PIN ---- */
+$("pinForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("pinResult").textContent = "unlocking…";
+  const r = await jfetch("/v1/sim/pin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pin: $("pin").value }),
+  });
+  $("pin").value = "";
+  if (r.ok && r.data.sim === "ready") {
+    $("pinResult").textContent = "✓ unlocked";
+    setTimeout(() => $("pinDialog").close(), 800);
+  } else {
+    $("pinResult").textContent = "✗ " + (r.data?.error?.message ||
+      ("SIM state: " + (r.data?.sim || "?") +
+       (r.data?.runtime_submissions_left != null
+        ? ", submissions left: " + r.data.runtime_submissions_left : "")));
+  }
+});
+
+/* ---- history ---- */
+async function loadHistory(reset) {
+  if (reset) { $("histBody").innerHTML = ""; histOldest = null; }
+  const url = "/v1/history?limit=25" + (histOldest ? "&before=" + histOldest : "");
+  const r = await jfetch(url);
+  if (!r.ok) return;
+  for (const m of r.data.messages) {
+    const tr = document.createElement("tr");
+    const td1 = document.createElement("td");
+    td1.textContent = (m.received_at || "").replace("T", " ");
+    const td2 = document.createElement("td");
+    td2.textContent = m.sender || "";
+    const td3 = document.createElement("td");
+    td3.textContent = m.text || "";
+    tr.append(td1, td2, td3);
+    $("histBody").append(tr);
+    histOldest = m.id;
+  }
+}
+$("histReload").addEventListener("click", () => loadHistory(true));
+$("histMore").addEventListener("click", () => loadHistory(false));
+
+init();
+connectFeed();
+</script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+# deb package definition for nfpm (https://nfpm.goreleaser.com).
+# Built by .github/workflows/packages.yml from the repository root:
+#   nfpm package -f server/packaging/deb/nfpm.yaml -p deb -t dist/
+name: generic-text-gateway
+arch: all
+platform: linux
+version: "0.1.0"
+maintainer: generic-text-gateway contributors
+description: USB modem SMS gateway server (HTTPS API + web UI)
+homepage: https://github.com/MarvAmBass/generic-text-gateway
+license: custom
+depends:
+  - python3
+  - python3-serial
+  - openssl
+  - usb-modeswitch
+contents:
+  - src: ./server/gtg_server
+    dst: /usr/lib/generic-text-gateway/gtg_server
+  - src: ./server/packaging/bin/gtg-server
+    dst: /usr/bin/gtg-server
+    file_info:
+      mode: 0755
+  - src: ./server/packaging/systemd/gtg-server.service
+    dst: /lib/systemd/system/gtg-server.service
+  - src: ./server/packaging/deb/default-env
+    dst: /etc/default/gtg-server
+    type: config|noreplace
+scripts:
+  postinstall: ./server/packaging/deb/postinstall.sh

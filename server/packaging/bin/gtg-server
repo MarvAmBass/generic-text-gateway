@@ -1,0 +1,3 @@
+#!/bin/sh
+# Installed wrapper (apk/deb/container): package lives under /usr/lib.
+exec env PYTHONPATH=/usr/lib/generic-text-gateway python3 -m gtg_server "$@"

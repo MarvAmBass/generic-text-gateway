@@ -1,0 +1,33 @@
+# Maintainer: generic-text-gateway contributors
+pkgname=generic-text-gateway
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="USB modem SMS gateway server (HTTPS API + web UI)"
+url="https://github.com/MarvAmBass/generic-text-gateway"
+arch="noarch"
+license="custom"
+depends="python3 py3-pyserial openssl usb-modeswitch"
+subpackages="$pkgname-openrc"
+install="$pkgname.pre-install"
+options="!check"
+# Sources are taken from the repo checkout ($startdir/../../..) — built by CI
+# with `abuild -F` inside the repository, not from a downloaded tarball.
+source=""
+
+build() {
+	:
+}
+
+package() {
+	local repo="$startdir/../.."
+	mkdir -p "$pkgdir/usr/lib/generic-text-gateway"
+	cp -r "$repo/gtg_server" "$pkgdir/usr/lib/generic-text-gateway/"
+	find "$pkgdir/usr/lib/generic-text-gateway" -name __pycache__ -type d \
+		-exec rm -rf {} + 2>/dev/null || true
+	install -Dm755 "$repo/packaging/bin/gtg-server" "$pkgdir/usr/bin/gtg-server"
+	install -Dm755 "$repo/packaging/openrc/gtg-server.initd" \
+		"$pkgdir/etc/init.d/gtg-server"
+	install -Dm644 "$repo/packaging/openrc/gtg-server.confd" \
+		"$pkgdir/etc/conf.d/gtg-server"
+	install -dm750 "$pkgdir/var/lib/generic-text-gateway"
+}

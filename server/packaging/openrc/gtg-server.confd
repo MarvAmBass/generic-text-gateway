@@ -1,0 +1,25 @@
+# Configuration for /etc/init.d/gtg-server — every GTG_* variable exported here
+# reaches the server (see PLAN.md 3.11 for the full reference).
+
+# REQUIRED: API tokens (generate: openssl rand -hex 24)
+#export GTG_TOKENS="all:change-me"
+
+# Listen: loopback only by default. For LAN clients bind explicitly:
+#export GTG_LISTEN="0.0.0.0:8443,[::]:8443"
+
+# Web UI login (https://host:8443/ui)
+#export GTG_WEBUI_USER="admin"
+#export GTG_WEBUI_PASS="change-me"
+
+# SIM PIN: leave unset to enter it manually via the web UI after each boot
+# (memory-only), or set it here if you accept it living in this file.
+#export GTG_SIM_PIN="0000"
+
+# Optional message persistence (off by default):
+#export GTG_STORE_DIR="/var/lib/generic-text-gateway/store"
+
+# Other useful knobs:
+#export GTG_SERIAL_PORT="/dev/ttyUSB0"
+#export GTG_ALLOWED_RECIPIENTS="+1555,+49"
+#export GTG_SEND_RATE="30/hour"
+#export GTG_LOG_LEVEL="debug"

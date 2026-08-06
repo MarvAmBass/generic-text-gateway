@@ -1,0 +1,73 @@
+name: Packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    container: alpine:3.20
+    steps:
+      - name: Install build tools
+        run: apk add --no-cache abuild build-base git
+
+      - uses: actions/checkout@v4
+
+      - name: Build apk (unsigned, install with --allow-untrusted)
+        run: |
+          adduser -D builder
+          addgroup builder abuild
+          chown -R builder:builder .
+          su builder -c '
+            set -e
+            abuild-keygen -a -n
+            cd server/packaging/apk
+            abuild -F -d
+          '
+          mkdir -p dist
+          find /home/builder/packages -name "*.apk" -exec cp {} dist/ \;
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-packages
+          path: dist/*.apk
+
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build deb with nfpm
+        run: |
+          mkdir -p dist
+          docker run --rm -v "$PWD":/work -w /work goreleaser/nfpm:latest \
+            package -f server/packaging/deb/nfpm.yaml -p deb -t dist/
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-packages
+          path: dist/*.deb
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [apk, deb]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Attach packages to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

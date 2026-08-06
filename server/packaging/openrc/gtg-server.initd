@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+# OpenRC service for generic-text-gateway.
+# Configuration: /etc/conf.d/gtg-server (export GTG_* variables there).
+
+name="generic-text-gateway"
+description="USB modem SMS gateway server"
+command="/usr/bin/gtg-server"
+command_args="run"
+command_background="yes"
+command_user="${GTG_USER:-gtg:gtg}"
+pidfile="/run/gtg-server.pid"
+output_log="/var/log/gtg-server.log"
+error_log="/var/log/gtg-server.log"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    checkpath -d -o "${GTG_USER:-gtg:gtg}" "${GTG_DATA_DIR:-/var/lib/generic-text-gateway}"
+    checkpath -f -o "${GTG_USER:-gtg:gtg}" "$output_log"
+}
