@@ -101,6 +101,36 @@ Everything is settable via environment variables (`GTG_*` / `GTC_*`), with an op
 INI config file (`GTG_CONFIG=/etc/generic-text-gateway/gateway.conf`); env wins.
 The full reference tables are in [PLAN.md](PLAN.md) §3.11 (server) and §4.4 (client).
 
+### Hashed credentials (recommended)
+
+Server-side secrets don't have to be stored in plaintext — keep only hashes in the
+config; the plaintext token lives solely with its consumer (your client/HA):
+
+```sh
+# Web UI password -> PBKDF2-SHA256 (interactive, nothing stored or echoed):
+gtg-server hash-password
+#   GTG_WEBUI_PASS_HASH=pbkdf2_sha256$210000$<salt>$<dk>
+
+# API token -> sha256 (type the token on stdin, keeps it out of shell history):
+gtg-server hash-token
+#   sha256:<64 hex>
+```
+
+Put the results in your config:
+
+```sh
+export GTG_TOKENS='receive:sha256:<hex>,send:sha256:<hex>'
+export GTG_WEBUI_PASS_HASH='pbkdf2_sha256$210000$<salt>$<dk>'
+```
+
+⚠️ **Single quotes are mandatory** for the password hash: it contains `$` characters —
+double quotes (or no quotes) make the shell expand them away when the service sources
+the file, silently breaking login. `GTG_WEBUI_PASS_HASH` takes precedence if the plain
+`GTG_WEBUI_PASS` is also set. A hash cannot be reversed: if a plaintext token is lost,
+generate a new token and replace the hash. The SIM PIN (`GTG_SIM_PIN`) cannot be
+hashed — it must be sent to the modem as-is; protect the config file (mode 600)
+instead.
+
 ## Tested hardware
 
 | Modem | USB IDs | Mode switch | Notes |
