@@ -165,7 +165,9 @@ def cmd_hash_password():
     if pw != getpass.getpass("Repeat:   "):
         print("passwords do not match", file=sys.stderr)
         return 1
-    print("GTG_WEBUI_PASS_HASH=" + auth_mod.hash_password(pw))
+    # Single quotes included: the hash contains '$', which double quotes or no
+    # quotes would let the shell expand away when the config is sourced.
+    print("export GTG_WEBUI_PASS_HASH='" + auth_mod.hash_password(pw) + "'")
     return 0
 
 

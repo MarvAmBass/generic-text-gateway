@@ -107,11 +107,13 @@ Server-side secrets don't have to be stored in plaintext — keep only hashes in
 config; the plaintext token lives solely with its consumer (your client/HA):
 
 ```sh
-# Web UI password -> PBKDF2-SHA256 (interactive, nothing stored or echoed):
+# Web UI password -> PBKDF2-SHA256 (interactive, nothing stored or echoed).
+# Output is a ready-to-paste config line, single quotes included:
 gtg-server hash-password
-#   GTG_WEBUI_PASS_HASH=pbkdf2_sha256$210000$<salt>$<dk>
+#   export GTG_WEBUI_PASS_HASH='pbkdf2_sha256$210000$<salt>$<dk>'
 
-# API token -> sha256 (type the token on stdin, keeps it out of shell history):
+# API token -> sha256 (type the token on stdin, keeps it out of shell history).
+# The fragment goes inside your GTG_TOKENS value:
 gtg-server hash-token
 #   sha256:<64 hex>
 ```
