@@ -338,6 +338,12 @@ solid delivery semantics without any server-side persistence.
 - Bearer tokens, compared with `hmac.compare_digest`.
 - `GTG_TOKENS` = comma list of `scope:token` entries; scopes: `send`, `receive`, `all`.
   Example: `GTG_TOKENS=all:s3cr3t-ops,send:ha-send-only,receive:client-inbox`.
+- **Hashed at-rest storage** (recommended): token entries as `scope:sha256:<64-hex>`
+  (`gtg-server hash-token`; unsalted sha256 is fine — tokens are high-entropy random),
+  web UI password as `GTG_WEBUI_PASS_HASH` = `pbkdf2_sha256$iter$salt$dk`
+  (`gtg-server hash-password`, 210k iterations; takes precedence over the plain var).
+  Verified Basic credentials are cached in memory as hashes so per-request auth
+  doesn't re-run the KDF. Plaintext secrets then exist only on the consumers.
 - Failed auth: 401, per-IP exponential backoff after repeated failures (in-memory).
 - Optional `GTG_ALLOWED_RECIPIENTS` (comma list / prefixes) as a safety net against a
   leaked send token running up the bill.
@@ -365,6 +371,7 @@ the env names minus the prefix (`sim_pin = 1234` ≙ `GTG_SIM_PIN=1234`).
 | `GTG_RING_SIZE` | `100` | in-RAM replay ring for reconnecting subscribers |
 | `GTG_WEBUI` | `true` | serve the embedded web UI at `/ui` (set `false` to disable) |
 | `GTG_WEBUI_USER` / `GTG_WEBUI_PASS` | *(unset)* | web UI login; unset → UI accepts an API token as login |
+| `GTG_WEBUI_PASS_HASH` | *(unset)* | hashed alternative to `GTG_WEBUI_PASS` (wins if both set) |
 | `GTG_POLL_INTERVAL` | `15` | inbound poll seconds (fallback strategies) |
 | `GTG_RECONCILE_INTERVAL` | `300` | stored-message reconciliation seconds |
 | `GTG_MAX_SUBSCRIBERS` | `20` | concurrent SSE connections cap |

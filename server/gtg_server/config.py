@@ -26,6 +26,7 @@ class Config:
         "WEBUI": "true",
         "WEBUI_USER": "",
         "WEBUI_PASS": "",
+        "WEBUI_PASS_HASH": "",
         "POLL_INTERVAL": "15",
         "RECONCILE_INTERVAL": "300",
         "MAX_SUBSCRIBERS": "20",

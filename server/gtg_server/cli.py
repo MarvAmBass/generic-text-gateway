@@ -29,7 +29,8 @@ def cmd_run(cfg):
         log.error("GTG_TOKENS is required (e.g. GTG_TOKENS=all:$(openssl rand -hex 24))")
         return 2
     tokens = auth_mod.parse_tokens(tokens_spec)
-    auth = auth_mod.Auth(tokens, cfg.str("WEBUI_USER"), cfg.str("WEBUI_PASS"))
+    auth = auth_mod.Auth(tokens, cfg.str("WEBUI_USER"), cfg.str("WEBUI_PASS"),
+                         cfg.str("WEBUI_PASS_HASH"))
 
     store = FileStore(cfg.str("STORE_DIR")) if cfg.str("STORE_DIR") else None
     if store:
@@ -155,6 +156,30 @@ def cmd_send(cfg, to, text):
     return 0 if rec["state"] == "submitted" else 1
 
 
+def cmd_hash_password():
+    """Interactive: print a GTG_WEBUI_PASS_HASH value (nothing echoed/stored)."""
+    import getpass
+
+    from . import auth as auth_mod
+    pw = getpass.getpass("Password: ")
+    if pw != getpass.getpass("Repeat:   "):
+        print("passwords do not match", file=sys.stderr)
+        return 1
+    print("GTG_WEBUI_PASS_HASH=" + auth_mod.hash_password(pw))
+    return 0
+
+
+def cmd_hash_token():
+    """Read a token on stdin, print its GTG_TOKENS sha256 form."""
+    from . import auth as auth_mod
+    token = sys.stdin.readline().strip()
+    if not token:
+        print("provide the token on stdin", file=sys.stderr)
+        return 1
+    print("sha256:" + auth_mod.hash_token(token))
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="gtg-server",
                                      description="generic-text-gateway server")
@@ -163,6 +188,8 @@ def main(argv=None):
     sub.add_parser("run", help="run the gateway (default)")
     sub.add_parser("fingerprint", help="print the TLS cert SHA-256 fingerprint")
     sub.add_parser("probe", help="probe modems and print a JSON report")
+    sub.add_parser("hash-password", help="hash a web UI password for GTG_WEBUI_PASS_HASH")
+    sub.add_parser("hash-token", help="stdin token -> scope:sha256:<hex> form for GTG_TOKENS")
     send_p = sub.add_parser("send", help="one-shot test send via the modem")
     send_p.add_argument("--to", required=True)
     send_p.add_argument("--text", required=True)
@@ -176,6 +203,10 @@ def main(argv=None):
         return cmd_fingerprint(cfg)
     if command == "probe":
         return cmd_probe(cfg)
+    if command == "hash-password":
+        return cmd_hash_password()
+    if command == "hash-token":
+        return cmd_hash_token()
     if command == "send":
         return cmd_send(cfg, args.to, args.text)
     parser.error("unknown command")

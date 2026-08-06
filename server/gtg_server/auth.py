@@ -5,26 +5,65 @@ Basic <user:pass>   -> web UI. With GTG_WEBUI_USER set, checks user+pass -> "all
                        Without it, any username + an API token as password grants that
                        token's scope.
 
+Hashed at-rest storage (recommended — no plaintext secrets in config):
+- token entries may be "scope:sha256:<64-hex>" (hash of the token; tokens are
+  high-entropy random strings, so an unsalted fast hash is appropriate);
+- the web UI password may be stored as GTG_WEBUI_PASS_HASH =
+  "pbkdf2_sha256$<iterations>$<salt-hex>$<dk-hex>" (generate with
+  `gtg-server hash-password`). Verified credentials are cached in memory (as
+  hashes) so per-request Basic auth doesn't re-run the KDF every time.
+
 No cookies, no sessions. CSRF is a non-issue (no ambient credential); mutating
 endpoints additionally require Content-Type: application/json (enforced in api.py).
 """
 import base64
+import hashlib
 import hmac
+import os
 import threading
 import time
 
 SCOPES = ("send", "receive", "all")
+PBKDF2_ITERATIONS = 210_000
 
 
 def parse_tokens(spec):
-    """'all:tok1,send:tok2' -> {token: scope}. Raises ValueError on bad entries."""
-    tokens = {}
+    """'all:tok1,send:sha256:<hex>' -> ({token: scope}, {sha256hex: scope})."""
+    plain, hashed = {}, {}
     for entry in [e.strip() for e in spec.split(",") if e.strip()]:
         scope, sep, token = entry.partition(":")
         if not sep or scope not in SCOPES or not token:
             raise ValueError(f"invalid GTG_TOKENS entry (want scope:token): {entry!r}")
-        tokens[token] = scope
-    return tokens
+        if token.startswith("sha256:"):
+            digest = token[len("sha256:"):].lower()
+            if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                raise ValueError(f"invalid sha256 token hash in entry: {entry!r}")
+            hashed[digest] = scope
+        else:
+            plain[token] = scope
+    return plain, hashed
+
+
+def hash_token(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def hash_password(password, iterations=PBKDF2_ITERATIONS, salt=None):
+    salt = salt if salt is not None else os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${dk.hex()}"
+
+
+def verify_password(password, encoded):
+    try:
+        algo, iterations, salt_hex, dk_hex = encoded.split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode(),
+                                 bytes.fromhex(salt_hex), int(iterations))
+        return hmac.compare_digest(dk.hex(), dk_hex)
+    except (ValueError, AttributeError):
+        return False
 
 
 def _eq(a, b):
@@ -32,16 +71,40 @@ def _eq(a, b):
 
 
 class Auth:
-    def __init__(self, tokens, webui_user="", webui_pass=""):
-        self.tokens = tokens          # {token: scope}
+    def __init__(self, tokens, webui_user="", webui_pass="", webui_pass_hash=""):
+        if isinstance(tokens, dict):          # backwards-compatible: plain dict
+            tokens = (tokens, {})
+        self.tokens, self.hashed_tokens = tokens
         self.webui_user = webui_user
         self.webui_pass = webui_pass
+        self.webui_pass_hash = webui_pass_hash
+        self._kdf_cache = set()               # sha256 of verified user|pass pairs
+        self._kdf_lock = threading.Lock()
 
     def _check_token(self, token):
         for known, scope in self.tokens.items():
             if _eq(known, token):
                 return scope
+        digest = hash_token(token)
+        for known, scope in self.hashed_tokens.items():
+            if _eq(known, digest):
+                return scope
         return None
+
+    def _check_webui_password(self, password):
+        if self.webui_pass_hash:
+            key = hashlib.sha256(f"{self.webui_user}\x00{password}".encode()).hexdigest()
+            with self._kdf_lock:
+                if key in self._kdf_cache:
+                    return True
+            if verify_password(password, self.webui_pass_hash):
+                with self._kdf_lock:
+                    self._kdf_cache.add(key)
+                    if len(self._kdf_cache) > 32:
+                        self._kdf_cache.clear()
+                return True
+            return False
+        return bool(self.webui_pass) and _eq(password, self.webui_pass)
 
     def check(self, header):
         """Authorization header value -> scope string, or None if unauthorized."""
@@ -57,7 +120,7 @@ class Auth:
             except Exception:
                 return None
             if self.webui_user:
-                if _eq(user, self.webui_user) and _eq(password, self.webui_pass):
+                if _eq(user, self.webui_user) and self._check_webui_password(password):
                     return "all"
                 return None
             # No web UI credentials configured: accept any user + API token as password.

@@ -3,7 +3,8 @@ import os
 import tempfile
 import unittest
 
-from gtg_server.auth import Auth, RateLimit, parse_tokens
+from gtg_server.auth import (Auth, RateLimit, hash_password, hash_token,
+                             parse_tokens, verify_password)
 from gtg_server.config import Config
 
 
@@ -13,14 +14,49 @@ def basic(user, password):
 
 class TestTokens(unittest.TestCase):
     def test_parse(self):
-        tokens = parse_tokens("all:t1, send:t2 ,receive:t3")
-        self.assertEqual(tokens, {"t1": "all", "t2": "send", "t3": "receive"})
+        plain, hashed = parse_tokens("all:t1, send:t2 ,receive:t3")
+        self.assertEqual(plain, {"t1": "all", "t2": "send", "t3": "receive"})
+        self.assertEqual(hashed, {})
+
+    def test_parse_hashed(self):
+        digest = hash_token("secret-tok")
+        plain, hashed = parse_tokens(f"all:t1,send:sha256:{digest}")
+        self.assertEqual(plain, {"t1": "all"})
+        self.assertEqual(hashed, {digest: "send"})
 
     def test_parse_rejects_bad_scope(self):
         with self.assertRaises(ValueError):
             parse_tokens("admin:t1")
         with self.assertRaises(ValueError):
             parse_tokens("justatoken")
+        with self.assertRaises(ValueError):
+            parse_tokens("send:sha256:nothex")
+
+
+class TestHashedAuth(unittest.TestCase):
+    def test_hashed_token_grants_scope(self):
+        auth = Auth(parse_tokens("send:sha256:" + hash_token("tok-hashed")))
+        self.assertEqual(auth.check("Bearer tok-hashed"), "send")
+        self.assertIsNone(auth.check("Bearer wrong"))
+
+    def test_password_hash_roundtrip(self):
+        encoded = hash_password("hunter22", iterations=1000)
+        self.assertTrue(verify_password("hunter22", encoded))
+        self.assertFalse(verify_password("hunter23", encoded))
+        self.assertFalse(verify_password("hunter22", "garbage"))
+
+    def test_webui_pass_hash_with_cache(self):
+        encoded = hash_password("uipass", iterations=1000)
+        auth = Auth(parse_tokens("all:t1"), webui_user="ui",
+                    webui_pass_hash=encoded)
+        self.assertEqual(auth.check(basic("ui", "uipass")), "all")
+        self.assertEqual(auth.check(basic("ui", "uipass")), "all")   # cache hit
+        self.assertIsNone(auth.check(basic("ui", "wrong")))
+        # hash takes precedence over any plaintext value
+        auth2 = Auth(parse_tokens("all:t1"), webui_user="ui",
+                     webui_pass="plaintext", webui_pass_hash=encoded)
+        self.assertIsNone(auth2.check(basic("ui", "plaintext")))
+        self.assertEqual(auth2.check(basic("ui", "uipass")), "all")
 
 
 class TestAuth(unittest.TestCase):
