@@ -7,9 +7,10 @@ card, replacing phone-app-based SMS gateways. Two components in this repo:
   mode switching, AT dispatch, PDU encoding, SIM PIN), persists messages, and exposes an
   **authenticated HTTPS API** (auto self-signed TLS or externally provided certs) for sending
   and receiving SMS.
-- **`client/`** — runs anywhere. Connects to the server with **certificate pinning**, relays
-  inbound SMS into **Home Assistant** (event + sensor), and exposes a small local HTTP endpoint
-  so HA (or anything else) can send SMS without dealing with TLS/pinning itself.
+- **`client/`** — runs anywhere. Connects to the server over **verified TLS** (system trust
+  store by default, optional certificate pinning for self-signed certs), relays inbound SMS
+  into **Home Assistant** (event + sensor), and exposes a small local HTTP endpoint so HA
+  (or anything else) can send SMS without dealing with TLS at all.
 
 Language: **Python 3**, stdlib-only wherever possible. The single third-party dependency is
 **pyserial**, consumed as a distro package (`py3-pyserial` on Alpine, `python3-serial` on
@@ -479,17 +480,32 @@ one process + a small local HTTP server:
     on a host-networking container box, every container shares `127.0.0.1`. The client
     warns at startup when the bind is reachable and auth is unset.
 
-### 4.2 Certificate pinning
+### 4.2 Server certificate verification
 
-`http.client.HTTPSConnection` with a no-verify `ssl` context, then manually verify
-`sha256(getpeercert(binary_form=True))` against the configured pin **before** sending any
-bytes (incl. the auth header). Modes:
+The connection to the server is **always** verified — the only question is against what.
+At most one mode may be configured; unset means the system trust store:
 
-- `GTC_SERVER_PIN_SHA256=<hex>` — explicit pin (recommended; value from
-  `gtg-server fingerprint`).
+- **system trust store (default)** — `ssl.create_default_context()`: full chain +
+  hostname verification against the OS CA store. A server with a Let's Encrypt / other
+  public cert, or one signed by a company root installed on the client host, works with
+  **no client TLS config at all**. This is the mode for `GTG_TLS=provided`.
+- `GTC_SERVER_CA=<path>` — trust this CA bundle (PEM file, or a `c_rehash`'d directory)
+  **in addition to** the OS store, for a private/company root that isn't installed
+  system-wide. Additive on purpose: adding your own CA must not silently drop every public
+  one. Chain + hostname checks are unchanged.
+- `GTC_SERVER_PIN_SHA256=<hex>` — **pinning**, the mode for the server's auto
+  self-signed cert (`GTG_TLS=auto`): `http.client.HTTPSConnection` over a no-verify `ssl`
+  context, then manually compare `sha256(getpeercert(binary_form=True))` against the pin
+  **before** sending any bytes (incl. the auth header). Value from
+  `gtg-server fingerprint`. "I generate my own cert" without giving up authentication —
+  and strictly stronger than a CA chain, since exactly one key is accepted.
 - `GTC_SERVER_PIN_TOFU=true` — trust-on-first-use: store the first-seen fingerprint in the
-  state dir, hard-fail on any later change.
-- `GTC_SERVER_CA=<path>` — classic CA verification instead of pinning (for `provided` certs).
+  state dir, hard-fail on any later change. Convenience variant of the above; the initial
+  connection is unauthenticated, so prefer the explicit pin.
+
+There is no "skip verification" mode. Against a self-signed server with no pin configured,
+the default mode refuses the connection and the error names the fix
+(`gtg-server fingerprint` → `GTC_SERVER_PIN_SHA256`, or `GTC_SERVER_CA`).
 
 ### 4.3 Home Assistant payload (compat)
 
@@ -520,7 +536,7 @@ both are set.)
 | `GTC_SERVER_URL` | *(required)* | `https://modem-host:8443` |
 | `GTC_SERVER_TOKEN` | *(required)* | server bearer token (receive or all scope) |
 | `GTC_SERVER_SEND_TOKEN` | = SERVER_TOKEN | separate send-scope token if desired |
-| `GTC_SERVER_PIN_SHA256` / `GTC_SERVER_PIN_TOFU` / `GTC_SERVER_CA` | — | exactly one pin mode |
+| `GTC_SERVER_PIN_SHA256` / `GTC_SERVER_PIN_TOFU` / `GTC_SERVER_CA` | *(unset)* | at most one; unset = verify against the system trust store (4.2) |
 | `GTC_HA_URL` | *(required for HA relay)* | e.g. `http://homeassistant:8123` |
 | `GTC_HA_TOKEN` | *(required for HA relay)* | long-lived HA token |
 | `GTC_HA_EVENT` / `GTC_HA_SENSOR` | `sms_received` / `sensor.sms_received` | HA targets |
@@ -610,8 +626,8 @@ otherwise built with `-F` and documented `--allow-untrusted` install. Service:
   send rate limit, Basic-vs-Bearer auth paths, no-token-in-query, JSON-content-type
   enforcement, history 404-without-store + traversal attempts, idempotency.
 - **web UI**: 401-challenge flow, token-as-password mode, backoff.
-- **client**: fake server + fake HA; pinning accept/reject, TOFU persistence, SSE reconnect
-  + dedup, compat payload.
+- **client**: fake server + fake HA; verification-mode selection (default = system trust),
+  pinning accept/reject, TOFU persistence, SSE reconnect + dedup, compat payload.
 - Manual hardware checklist in README (E1750 = reference device).
 
 ## 9. Security notes
@@ -626,7 +642,8 @@ otherwise built with `-F` and documented `--allow-untrusted` install. Service:
 - TLS private key `0600` in data dir; server refuses plaintext on non-loopback binds
   without an explicit insecure flag. Losing the data dir regenerates the cert → all pinned
   clients hard-fail **by design**; runbook: `gtg-server fingerprint` → update
-  `GTC_SERVER_PIN_SHA256` (or clear the TOFU pin file).
+  `GTC_SERVER_PIN_SHA256` (or clear the TOFU pin file). Clients on the default system-trust
+  mode against a `provided` cert are unaffected by data-dir loss.
 - Recipient allowlist + send rate limit bound the blast radius/cost of a leaked send token.
 - Runtime PIN endpoint is privilege-gated + lifetime-capped so no API token class can
   PUK-lock the SIM (3.6).

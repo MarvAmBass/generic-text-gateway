@@ -9,9 +9,10 @@ Two components:
   (discovery, ZeroCD mode switching, AT command dispatch, PDU encoding, SIM PIN handling)
   and exposes an authenticated HTTPS API (auto self-signed TLS) plus a minimal embedded
   web UI for sending SMS and watching incoming messages live.
-- **`client/`** (`gtg-client`) — runs anywhere. Connects to the server with certificate
-  pinning, relays inbound SMS into **Home Assistant** (event + sensor), and exposes a
-  small local HTTP endpoint so HA can send SMS with a plain `rest_command`.
+- **`client/`** (`gtg-client`) — runs anywhere. Connects to the server over verified TLS
+  (system trust store by default, optional certificate pinning), relays inbound SMS into
+  **Home Assistant** (event + sensor), and exposes a small local HTTP endpoint so HA can
+  send SMS with a plain `rest_command`.
 
 Python 3, stdlib only — the single dependency is **pyserial** from your distro
 (`py3-pyserial` on Alpine, `python3-serial` on Debian). No pip, ever.
@@ -57,10 +58,27 @@ port, what answered `AT`, and the modem's identity.
 
 ```sh
 cd client
-# edit docker-compose.yml: GTC_SERVER_URL, GTC_SERVER_TOKEN, GTC_SERVER_PIN_SHA256,
-# GTC_HA_URL, GTC_HA_TOKEN
+# edit docker-compose.yml: GTC_SERVER_URL, GTC_SERVER_TOKEN, GTC_HA_URL, GTC_HA_TOKEN
+# — plus GTC_SERVER_PIN_SHA256 if the server uses its self-signed default cert
 docker compose up -d --build
 ```
+
+### Trusting the server's certificate
+
+The client always verifies the server; how it does so depends on the certificate the
+server presents. Configure **at most one** of these — unset is the sensible default:
+
+| Server certificate | Client config |
+|---|---|
+| Let's Encrypt / other public CA, or a company root installed on the client host | *nothing* — the OS trust store verifies chain + hostname |
+| private CA not installed system-wide | `GTC_SERVER_CA=/path/ca.pem` (PEM file or `c_rehash`'d dir; **added to** the OS store, public CAs keep working) |
+| the server's auto self-signed cert (`GTG_TLS=auto`, the default) | `GTC_SERVER_PIN_SHA256=$(gtg-server fingerprint)` |
+| self-signed, first-contact convenience | `GTC_SERVER_PIN_TOFU=true` (pins whatever it sees first, then hard-fails on change) |
+
+Pinning is for "I want my own certificate without losing authentication" — it accepts
+exactly one key, so it is stricter than a CA chain, not a workaround for one. There is no
+way to disable verification: pointing the default mode at a self-signed server fails with
+an error that names the fix.
 
 Home Assistant then sends SMS via the compat endpoint (android-sms-gateway shape):
 

@@ -1,9 +1,14 @@
+import contextlib
 import io
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 
-from gtg_client.config import normalize_targets
+from gtg_client.config import Config, normalize_targets
 from gtg_client.relay import SSEReader, message_hash
+from gtg_client.pinned_http import ServerConnection
 from gtg_client.state import State
 
 
@@ -81,6 +86,85 @@ class TestMessageHash(unittest.TestCase):
     def test_local_fallback_stable(self):
         m = {"sender": "+15551234567", "scts": "t", "text": "x"}
         self.assertEqual(message_hash(m), message_hash(dict(m)))
+
+
+@contextlib.contextmanager
+def _ca_bundle():
+    """A throwaway self-signed PEM, for exercising GTC_SERVER_CA."""
+    if not shutil.which("openssl"):
+        raise unittest.SkipTest("openssl not available")
+    with tempfile.TemporaryDirectory() as tmp:
+        cert = os.path.join(tmp, "ca.pem")
+        key = os.path.join(tmp, "ca.key")
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "ec",
+                        "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+                        "-keyout", key, "-out", cert, "-days", "1",
+                        "-subj", "/CN=test-ca"], check=True, capture_output=True)
+        yield cert
+
+
+class TestServerConnection(unittest.TestCase):
+    PIN = "a" * 64
+
+    def _conn(self, **env):
+        env.setdefault("GTC_SERVER_URL", "https://gw.example:8443")
+        env.setdefault("GTC_CONFIG", "")          # ignore any host config file
+        return ServerConnection(Config(environ=env))
+
+    def test_system_trust_is_the_default(self):
+        # A publicly trusted (or company-root) server cert needs no client config.
+        conn = self._conn()
+        self.assertEqual(conn.mode, "system")
+        self.assertTrue(conn.open()._context.check_hostname)
+
+    def test_pin_mode_opt_in(self):
+        conn = self._conn(GTC_SERVER_PIN_SHA256=self.PIN)
+        self.assertEqual(conn.mode, "pin")
+
+    def test_pin_accepts_colon_form_and_rejects_garbage(self):
+        colons = ":".join(self.PIN[i:i + 2] for i in range(0, 64, 2))
+        self.assertEqual(self._conn(GTC_SERVER_PIN_SHA256=colons).pin, self.PIN)
+        with self.assertRaises(ValueError):
+            self._conn(GTC_SERVER_PIN_SHA256="not-a-fingerprint")
+
+    def test_tofu_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(GTC_SERVER_PIN_TOFU="true", GTC_STATE_DIR=tmp)
+            self.assertEqual(conn.mode, "tofu")
+
+    def test_ca_mode_adds_to_system_trust(self):
+        # A private CA must not cost you the public ones (Let's Encrypt & co).
+        def loaded(conn):
+            return {(str(c["subject"]), c["serialNumber"])
+                    for c in conn._ctx.get_ca_certs()}
+        with _ca_bundle() as path:
+            conn = self._conn(GTC_SERVER_CA=path)
+            self.assertEqual(conn.mode, "ca")
+            extra = loaded(conn) - loaded(self._conn())
+            self.assertEqual(len(extra), 1)                  # the private CA
+            self.assertIn("test-ca", extra.pop()[0])
+            self.assertTrue(loaded(self._conn()) <= loaded(conn))
+
+    def test_ca_dir_accepted(self):
+        with _ca_bundle() as path:
+            self.assertEqual(
+                self._conn(GTC_SERVER_CA=os.path.dirname(path)).mode, "ca")
+
+    def test_bad_ca_file_is_a_config_error(self):
+        with self.assertRaises(ValueError):
+            self._conn(GTC_SERVER_CA="/nonexistent/ca.pem")
+        with tempfile.NamedTemporaryFile(suffix=".pem") as empty:
+            with self.assertRaises(ValueError):   # not an ssl.SSLError traceback
+                self._conn(GTC_SERVER_CA=empty.name)
+
+    def test_modes_are_mutually_exclusive(self):
+        with _ca_bundle() as path:
+            with self.assertRaises(ValueError):
+                self._conn(GTC_SERVER_PIN_SHA256=self.PIN, GTC_SERVER_CA=path)
+
+    def test_https_required(self):
+        with self.assertRaises(ValueError):
+            self._conn(GTC_SERVER_URL="http://gw.example:8443")
 
 
 if __name__ == "__main__":

@@ -14,8 +14,12 @@ services:
       - GTC_SERVER_URL=https://modem-host.example:8443
       - GTC_SERVER_TOKEN=receive-token-here
       - GTC_SERVER_SEND_TOKEN=send-token-here
-      # Pin from `gtg-server fingerprint` (or use GTC_SERVER_PIN_TOFU=true / GTC_SERVER_CA)
+      # TLS: with a publicly trusted cert (Let's Encrypt) or a company root installed
+      # on this host, leave all three unset — the system trust store verifies it.
+      # For the server's self-signed default cert, pin it (`gtg-server fingerprint`):
       - GTC_SERVER_PIN_SHA256=paste-fingerprint-here
+      # - GTC_SERVER_PIN_TOFU=true          # pin whatever is seen first
+      # - GTC_SERVER_CA=/etc/ssl/my-ca.pem  # private CA, added to the OS store
       # --- Home Assistant relay ---
       - GTC_HA_URL=http://homeassistant.example:8123
       - GTC_HA_TOKEN=ha-long-lived-token-here

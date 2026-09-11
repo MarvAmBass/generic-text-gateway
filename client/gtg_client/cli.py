@@ -29,7 +29,13 @@ def main(argv=None):
             log.error("GTC_%s is required", key)
             return 2
 
-    server = ServerConnection(cfg)
+    try:
+        server = ServerConnection(cfg)
+    except ValueError as e:
+        log.error("%s", e)
+        return 2
+    log.info("server %s:%s verified via %s", server.host, server.port,
+             server.describe())
     sendapi.serve(cfg, server, log.getChild("send"))
 
     stop = threading.Event()
